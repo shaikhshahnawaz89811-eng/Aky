@@ -209,8 +209,12 @@ object ChatRunner {
         val payload = withContext(Dispatchers.IO) {
             AttachmentText.read(app, latest.attachments, false, budget / 2)
         }
-        val prompt = Prompts.buildLocal(history, Prompts.combineLatest(latest.text, payload.text), budget)
-        val reply = LocalPhi.generate(Prompts.system(run.viaVoice), prompt, maxTokens)
+        val system = Prompts.system(run.viaVoice)
+        val prompt = Prompts.buildPhiChat(
+            system, history, Prompts.combineLatest(latest.text, payload.text), budget - system.length
+        )
+        // system prompt is already inside [prompt]; pass "" so the library does not add a second one
+        val reply = LocalPhi.generate("", prompt, maxTokens)
         if (reply.text.isBlank()) {
             throw ReplyError("Model ne khaali reply di. Dobara try karo ya Reply length badlao.")
         }

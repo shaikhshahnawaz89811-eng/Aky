@@ -129,12 +129,15 @@ object LocalPhi {
 
     private fun clean(raw: String): String {
         var t = raw
-        val cut = listOf("<|end|>", "<|user|>", "<|endoftext|>")
+        // cut at the first chat marker (if the library leaves special tokens in the text)
+        val cut = listOf("<|end|>", "<|user|>", "<|system|>", "<|endoftext|>", "<|assistant|>")
             .map { t.indexOf(it) }
             .filter { it >= 0 }
             .minOrNull()
         if (cut != null) t = t.substring(0, cut)
-        t = t.replace("<|assistant|>", "").replace("<|system|>", "")
+        // safety net: if the model still starts writing the next turn, drop it
+        val runOn = Regex("\\n\\s*(User|Human|Assistant|Question):").find(t)
+        if (runOn != null && runOn.range.first > 0) t = t.substring(0, runOn.range.first)
         return t.trim()
     }
 }

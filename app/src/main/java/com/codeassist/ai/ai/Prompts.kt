@@ -76,6 +76,43 @@ object Prompts {
             "\n\nNew message from the user (reply to this one):\n" + newest
     }
 
+
+    /**
+     * Phi-4 mini chat format:  <|system|>..<|end|><|user|>..<|end|><|assistant|>..<|end|>
+     * The llama-android "free" complete() treats the prompt as RAW text, so without this the model
+     * just continues the user's words ("Hello" -> "!\nI have a question...") and never emits <|end|>.
+     * Here the template is built by hand, with real turns, ending in an open <|assistant|> header.
+     */
+    fun buildPhiChat(system: String, previous: List<Message>, latest: String, budgetChars: Int): String {
+        val sys = "<|system|>" + system.trim() + "<|end|>"
+        val newest = if (latest.length > budgetChars) {
+            "[...earlier part trimmed...]\n" + latest.takeLast(budgetChars)
+        } else {
+            latest
+        }
+        var remaining = budgetChars - newest.length - sys.length
+        val turns = ArrayList<String>()
+        if (remaining > 240) {
+            for (m in previous.asReversed()) {
+                var t = m.text.trim()
+                if (t.isEmpty() || m.state != null) continue
+                if (t.length > 700) t = t.take(700) + "..."
+                val tag = if (m.role == Role.USER) "<|user|>" else "<|assistant|>"
+                val turn = tag + stripTags(t) + "<|end|>"
+                if (turn.length > remaining) break
+                turns.add(turn)
+                remaining -= turn.length
+            }
+            turns.reverse()
+            // template must start with a user turn
+            while (turns.isNotEmpty() && !turns[0].startsWith("<|user|>")) turns.removeAt(0)
+        }
+        return sys + turns.joinToString("") + "<|user|>" + stripTags(newest) + "<|end|><|assistant|>"
+    }
+
+    private fun stripTags(t: String): String =
+        t.replace(Regex("<\\|[a-z_]+\\|>"), "")
+
     /** Gemini wants alternating user/model turns that start with a user turn. */
     fun geminiTurns(
         previous: List<Message>,
