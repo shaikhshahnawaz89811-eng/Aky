@@ -156,7 +156,7 @@ class AssistantService : Service(), WakeWordEngine.Listener {
 
     // ---------- heartbeat ----------
 
-    private val heartbeat = object : Runnable {
+    private val heartbeat: Runnable = object : Runnable {
         override fun run() {
             beat()
             main.postDelayed(this, HEARTBEAT_MS)

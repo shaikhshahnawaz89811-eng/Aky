@@ -729,7 +729,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
 
     // ---------- filler while a slow brain thinks (PhraseCache) ----------
 
-    private val fillerRunnable = Runnable {
+    // explicit type on purpose: the lambda re-posts itself, and Kotlin cannot infer a self-referencing val
+    private val fillerRunnable: Runnable = Runnable {
         if (state != State.THINKING || !Store.fillers) return@Runnable
         val run = ChatRunner.current
         // fast path (and nothing running yet): never a filler. Max 2, at least ~7 s apart.

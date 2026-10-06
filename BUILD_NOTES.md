@@ -189,3 +189,10 @@ failure found.
   The JVM tests have still never been executed: this is their first run.
 - `app/build.gradle` has `lint { checkReleaseBuilds = false; abortOnError = false }` so lint findings cannot fail the
   unsigned release build (lint still runs in its own CI step).
+
+**First real compiler run (GitHub Actions):** one error, `VoiceController.kt:743 Type checking has run into a recursive
+problem`. `fillerRunnable` re-posts itself inside its own lambda, and Kotlin cannot infer the type of a val that refers
+to itself. Fixed by giving it the explicit type `Runnable` (same for `AssistantService.heartbeat`, which also re-posts
+itself). A scan of all Kotlin files found no other self-referencing val. This was the only error the compiler reported
+in that run; the next run may show errors that this one hid, and the unit tests have not compiled yet.
+
