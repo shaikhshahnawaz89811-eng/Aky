@@ -32,6 +32,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.codeassist.ai.MainActivity
 import com.codeassist.ai.R
+import com.codeassist.ai.ai.ActivityLog
 import com.codeassist.ai.ai.BrainStatus
 import com.codeassist.ai.ai.ChatRunner
 import com.codeassist.ai.ai.Modules
@@ -143,6 +144,14 @@ class HomeFragment : Fragment() {
         adapter.onMessageAction = { showMessageActions(it) }
         adapter.onImageClick = { showImagePreview(it) }
         adapter.onFileClick = { showAttachmentActions(it) }
+        adapter.onUndo = { m ->
+            val id = m.undoId
+            val ctx = context
+            if (id != null && ctx != null) {
+                Toast.makeText(ctx, ActivityLog.undo(ctx, id), Toast.LENGTH_LONG).show()
+                adapter.refresh()
+            }
+        }
         messageList.adapter = adapter
         (messageList.itemAnimator as? DefaultItemAnimator)?.apply {
             addDuration = 160
@@ -643,6 +652,7 @@ class HomeFragment : Fragment() {
             adapter.onMessageAction = null
             adapter.onImageClick = null
             adapter.onFileClick = null
+            adapter.onUndo = null
         }
         composer = null
         recycler = null

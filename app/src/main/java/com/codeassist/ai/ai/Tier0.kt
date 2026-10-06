@@ -21,7 +21,11 @@ import java.util.Locale
  * and goes to the selected brain.
  */
 object Tier0 {
-    class Result(val title: String, val reply: String)
+    /**
+     * [tier] is the risk tier from the audit (T0 read-only, T1 reversible on-device, T2 affects others).
+     * [undo] is a token understood by [ActivityLog.undo], or null when the action cannot be undone.
+     */
+    class Result(val title: String, val reply: String, val tier: String = "T0", val undo: String? = null)
 
     private const val B = "(?<![\\p{L}\\p{N}])"
     private const val E = "(?![\\p{L}\\p{N}])"
@@ -130,9 +134,26 @@ object Tier0 {
                 cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             } ?: return Result("Torch", "Is phone mein flash / torch nahi mila.")
             cm.setTorchMode(id, on)
-            Result("Torch", if (on) "Torch on kar di." else "Torch off kar di.")
+            Result(
+                "Torch", if (on) "Torch on kar di." else "Torch off kar di.",
+                "T1", if (on) "torch:off" else "torch:on"
+            )
         } catch (e: Exception) {
             Result("Torch", "Torch control nahi ho paya: " + (e.message ?: e.javaClass.simpleName))
+        }
+    }
+
+    /** Used by the Undo button. Returns null on success, or a user-facing error message. */
+    fun setTorch(ctx: Context, on: Boolean): String? {
+        return try {
+            val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val id = cm.cameraIdList.firstOrNull {
+                cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            } ?: return "Is phone mein flash / torch nahi mila."
+            cm.setTorchMode(id, on)
+            null
+        } catch (e: Exception) {
+            "Torch control nahi ho paya: " + (e.message ?: e.javaClass.simpleName)
         }
     }
 
@@ -160,7 +181,8 @@ object Tier0 {
         return launch(
             ctx, intent, "Timer",
             durationLabel(seconds) + " ka timer start kar diya.",
-            "Is phone ka Clock app timer intent support nahi karta."
+            "Is phone ka Clock app timer intent support nahi karta.",
+            "T1", "timer"
         )
     }
 
@@ -272,16 +294,19 @@ object Tier0 {
                     "Kal ke liye ye alarm aaj raat bol dena."
             )
         }
+        // unique label per time, so Undo can dismiss exactly this alarm (see ActivityLog.undo)
+        val label = "CodeAssist alarm " + String.format(Locale.US, "%02d:%02d", h, m)
         val intent = Intent(AlarmClock.ACTION_SET_ALARM)
             .putExtra(AlarmClock.EXTRA_HOUR, h)
             .putExtra(AlarmClock.EXTRA_MINUTES, m)
-            .putExtra(AlarmClock.EXTRA_MESSAGE, "CodeAssist alarm")
+            .putExtra(AlarmClock.EXTRA_MESSAGE, label)
             .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
         val day = if (ringsToday) "aaj" else "kal"
         return launch(
             ctx, intent, "Alarm",
             "Alarm $shown ($day) ke liye Clock app mein set kar diya.",
-            "Is phone ka Clock app alarm intent support nahi karta."
+            "Is phone ka Clock app alarm intent support nahi karta.",
+            "T1", "alarm:" + label
         )
     }
 
@@ -298,7 +323,8 @@ object Tier0 {
         return launch(
             ctx, Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")), "Call",
             "Dialer mein $number khol diya. Call aap khud dabayenge.",
-            "Is phone mein dialer nahi mila."
+            "Is phone mein dialer nahi mila.",
+            "T2", null // T2: the dialer only opens; the user's own tap on Call is the explicit confirmation
         )
     }
 
@@ -331,14 +357,17 @@ object Tier0 {
         val app = matches[0]
         val launchIntent = pm.getLaunchIntentForPackage(app.pkg)
             ?: return Result("Open app", app.label + " abhi khul nahi sakta.")
-        return launch(ctx, launchIntent, "Open app", app.label + " khol diya.", app.label + " nahi khula.")
+        return launch(ctx, launchIntent, "Open app", app.label + " khol diya.", app.label + " nahi khula.", "T0", null)
     }
 
-    private fun launch(ctx: Context, intent: Intent, title: String, ok: String, missing: String): Result {
+    private fun launch(
+        ctx: Context, intent: Intent, title: String, ok: String, missing: String,
+        tier: String = "T1", undo: String? = null
+    ): Result {
         return try {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ctx.startActivity(intent)
-            Result(title, ok)
+            Result(title, ok, tier, undo)
         } catch (_: ActivityNotFoundException) {
             Result(title, missing)
         } catch (e: SecurityException) {

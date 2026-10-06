@@ -1,5 +1,8 @@
 package com.codeassist.ai.settings
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -13,7 +16,9 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.SwitchCompat
 import androidx.fragment.app.Fragment
 import com.codeassist.ai.R
+import com.codeassist.ai.ai.ActivityLog
 import com.codeassist.ai.ai.BrainStatus
+import com.codeassist.ai.ai.Trace
 import com.codeassist.ai.data.Store
 
 class SettingsFragment : Fragment() {
@@ -26,6 +31,7 @@ class SettingsFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         Store.init(requireContext())
+        ActivityLog.init(requireContext())
         container = view.findViewById(R.id.settingsContainer)
         view.findViewById<View>(R.id.btnMenu).setOnClickListener {
             (activity as? com.codeassist.ai.MainActivity)?.openDrawer()
@@ -79,6 +85,20 @@ class SettingsFragment : Fragment() {
             }
         }
 
+        section("Activity and debug")
+        card {
+            valueRow(R.drawable.ic_history, "Activity log", ActivityLog.all().size.toString() + " actions") { _, _ ->
+                showActivityLog()
+            }
+            valueRow(R.drawable.ic_chart, "Debug: last turns", Trace.count().toString() + " turns") { _, _ ->
+                showTrace()
+            }
+            noteRow(
+                "Activity log mein har phone action (torch, alarm, timer, call, app) dikhta hai. " +
+                    "Torch, alarm aur timer wapas kiye ja sakte hain. Debug mein sirf timing aur status hota hai, message ka text nahi."
+            )
+        }
+
         section("App Behavior")
         card {
             switchRow(R.drawable.ic_history, "Open Last Project", Store.openLastProject) {
@@ -94,6 +114,63 @@ class SettingsFragment : Fragment() {
             setPadding(0, dp(40), 0, dp(8))
         }
         container.addView(version)
+    }
+
+    private fun showActivityLog() {
+        val ctx = requireContext()
+        val entries = ActivityLog.all().take(50)
+        if (entries.isEmpty()) {
+            Toast.makeText(ctx, "Abhi koi phone action nahi hua.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fmt = java.text.SimpleDateFormat("d MMM, hh:mm a", java.util.Locale.ENGLISH)
+        val labels = entries.map { e ->
+            fmt.format(java.util.Date(e.time)) + " · " + e.tool + " · " + e.tier +
+                (if (e.undone) " · wapas hua" else "") + "\n" + e.summary
+        }.toTypedArray()
+        AlertDialog.Builder(ctx)
+            .setTitle("Activity log")
+            .setItems(labels) { _, i ->
+                val e = entries[i]
+                if (e.undo != null && !e.undone) {
+                    AlertDialog.Builder(ctx)
+                        .setTitle("Undo?")
+                        .setMessage(e.summary)
+                        .setPositiveButton("Undo") { _, _ ->
+                            Toast.makeText(ctx, ActivityLog.undo(ctx, e.id), Toast.LENGTH_LONG).show()
+                            build()
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                } else {
+                    Toast.makeText(
+                        ctx,
+                        if (e.undone) "Ye pehle hi wapas ho chuka hai." else "Is action ka undo nahi hota.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            .setNeutralButton("Clear log") { _, _ ->
+                ActivityLog.clear()
+                build()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showTrace() {
+        val ctx = requireContext()
+        val text = Trace.dump()
+        AlertDialog.Builder(ctx)
+            .setTitle("Last turns (timings)")
+            .setMessage(text)
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("CodeAssist trace", text))
+                Toast.makeText(ctx, "Copy ho gaya", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun section(title: String) {

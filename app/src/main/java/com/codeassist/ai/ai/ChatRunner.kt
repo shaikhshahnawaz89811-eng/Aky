@@ -35,6 +35,10 @@ object ChatRunner {
         @Volatile var phase: String = "Soch raha hoon"
         val startedAt: Long = System.currentTimeMillis()
         @Volatile var cancelled: Boolean = false
+        @Volatile var firstTokenMs: Long = 0L
+        @Volatile var loadMs: Long = 0L
+        @Volatile var tokens: Int = 0
+        @Volatile var tps: Float = 0f
         var job: Job? = null
     }
 
@@ -64,6 +68,7 @@ object ChatRunner {
         val app = ctx.applicationContext
         Store.init(app)
         Modules.init(app)
+        ActivityLog.init(app)
         val all = Store.messages(chatId)
         val userIndex = all.indexOfLast { it.role == Role.USER }
         if (userIndex < 0) return null
@@ -91,10 +96,14 @@ object ChatRunner {
             var result: Message?
             try {
                 result = when {
-                    tool != null -> Message(
-                        id = run.messageId, role = Role.AI, text = tool.reply,
-                        engine = "tool", note = tool.title
-                    )
+                    tool != null -> {
+                        val entry = ActivityLog.add(tool.title, tool.tier, tool.reply, tool.undo)
+                        Message(
+                            id = run.messageId, role = Role.AI, text = tool.reply,
+                            engine = "tool", note = tool.title,
+                            undoId = if (tool.undo != null) entry.id else null
+                        )
+                    }
                     provider == "gemini" -> runGemini(app, run, history, latest)
                     else -> runLocal(app, run, history, latest)
                 }
@@ -130,8 +139,31 @@ object ChatRunner {
     private fun finish(run: Run, msg: Message?) {
         if (current !== run) return
         current = null
+        record(run, msg)
         if (msg != null) persist(run.chatId, msg)
         listener?.onFinished(run, msg)
+    }
+
+    private fun record(run: Run, msg: Message?) {
+        val status = when {
+            run.cancelled -> "stopped"
+            msg?.state == "error" -> "error"
+            else -> "ok"
+        }
+        Trace.add(
+            Trace.Turn(
+                time = System.currentTimeMillis(),
+                engine = run.engine,
+                route = if (run.engine == "tool") "tier0" else "brain",
+                totalMs = System.currentTimeMillis() - run.startedAt,
+                firstTokenMs = run.firstTokenMs,
+                loadMs = run.loadMs,
+                tokens = run.tokens,
+                tokPerSec = run.tps,
+                status = status,
+                detail = if (status == "error") (msg?.text ?: "").take(90) else ""
+            )
+        )
     }
 
     private fun persist(chatId: String, msg: Message) {
@@ -169,6 +201,7 @@ object ChatRunner {
         var lastPost = 0L
         val full = withContext(Dispatchers.IO) {
             GeminiClient.stream(key, model, system, turns, Store.geminiTemp, { run.cancelled }) { delta ->
+                if (run.firstTokenMs == 0L) run.firstTokenMs = System.currentTimeMillis() - run.startedAt
                 run.text = run.text + delta
                 val now = System.currentTimeMillis()
                 if (now - lastPost > 90) {
@@ -194,7 +227,9 @@ object ChatRunner {
         if (!LocalPhi.loaded) {
             run.label = "Model RAM mein load ho raha hai"
             postProgress(run)
+            val loadStart = System.currentTimeMillis()
             Modules.ensureLoaded()
+            run.loadMs = System.currentTimeMillis() - loadStart
         }
         if (LocalPhi.busy) {
             run.label = "Pichla reply khatam ho raha hai"
@@ -218,6 +253,8 @@ object ChatRunner {
         if (reply.text.isBlank()) {
             throw ReplyError("Model ne khaali reply di. Dobara try karo ya Reply length badlao.")
         }
+        run.tokens = reply.tokens
+        run.tps = reply.tokensPerSecond
         val speed = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
         val secs = reply.millis / 1000
         return Message(

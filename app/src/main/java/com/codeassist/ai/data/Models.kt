@@ -30,7 +30,9 @@ data class Message(
     val engine: String? = null,
     /** True when the user message was spoken (shows the voice caption). */
     val viaVoice: Boolean = false,
-    val voiceMs: Long = 0L
+    val voiceMs: Long = 0L,
+    /** Id of the ActivityLog entry when this reply is a phone action that can be undone. */
+    val undoId: String? = null
 )
 
 data class ChatMeta(

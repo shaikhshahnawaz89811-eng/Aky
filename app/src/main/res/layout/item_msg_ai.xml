@@ -55,6 +55,20 @@
                 android:layout_marginStart="6dp"
                 android:textColor="@color/text2"
                 android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/textUndo"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="4dp"
+                android:paddingTop="3dp"
+                android:paddingBottom="3dp"
+                android:textColor="@color/accent"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
         </LinearLayout>
 
         <TextView

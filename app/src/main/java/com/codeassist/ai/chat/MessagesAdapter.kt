@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.codeassist.ai.R
+import com.codeassist.ai.ai.ActivityLog
 import com.codeassist.ai.data.AttachKind
 import com.codeassist.ai.data.Attachment
 import com.codeassist.ai.data.Message
@@ -35,6 +36,7 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     var onMessageAction: ((Message) -> Unit)? = null
     var onImageClick: ((Attachment) -> Unit)? = null
     var onFileClick: ((Attachment) -> Unit)? = null
+    var onUndo: ((Message) -> Unit)? = null
 
     init {
         setHasStableIds(true)
@@ -68,6 +70,11 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         notifyItemChanged(index, "update")
     }
 
+    /** Re-binds every row (used after an Undo so the button turns into "Wapas ho gaya"). */
+    fun refresh() {
+        if (items.isNotEmpty()) notifyItemRangeChanged(0, items.size)
+    }
+
     fun selectText(messageId: String) {
         messageViews[messageId]?.let { view ->
             view.requestFocus()
@@ -92,7 +99,7 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         val message = items[position]
         when (holder) {
             is UserVH -> holder.bind(message, onImageClick, onFileClick)
-            is AiVH -> holder.bind(message)
+            is AiVH -> holder.bind(message, onUndo)
         }
         val textView = holder.itemView.findViewById<TextView>(R.id.textMsg)
         messageViews[message.id] = textView
@@ -222,15 +229,33 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private val note: TextView = view.findViewById(R.id.textNote)
         private val taskRow: View = view.findViewById(R.id.taskRow)
         private val taskText: TextView = view.findViewById(R.id.textTask)
+        private val undo: TextView = view.findViewById(R.id.textUndo)
         private var pulse: ObjectAnimator? = null
 
-        fun bind(message: Message) {
+        fun bind(message: Message, onUndo: ((Message) -> Unit)?) {
             val busy = message.state == "thinking"
             val error = message.state == "error"
             val waiting = busy && message.text.isBlank()
 
             taskRow.visibility = if (message.engine == "tool") View.VISIBLE else View.GONE
             taskText.text = "Phone action · " + (message.note ?: "")
+            val undoId = message.undoId
+            if (message.engine != "tool" || undoId == null) {
+                undo.visibility = View.GONE
+                undo.setOnClickListener(null)
+            } else {
+                undo.visibility = View.VISIBLE
+                if (ActivityLog.isUndone(undoId)) {
+                    undo.text = "Wapas ho gaya"
+                    undo.setTextColor(ContextCompat.getColor(undo.context, R.color.text3))
+                    undo.isClickable = false
+                    undo.setOnClickListener(null)
+                } else {
+                    undo.text = "Undo"
+                    undo.setTextColor(ContextCompat.getColor(undo.context, R.color.accent))
+                    undo.setOnClickListener { onUndo?.invoke(message) }
+                }
+            }
 
             if (waiting) {
                 thinking.visibility = View.VISIBLE
