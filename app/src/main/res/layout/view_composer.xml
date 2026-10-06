@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="14dp"
+    android:paddingEnd="14dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="14dp">
+
+    <LinearLayout
+        android:id="@+id/composerCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/composer_bg"
+        android:elevation="8dp"
+        android:clipToOutline="true"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="8dp">
+
+        <HorizontalScrollView
+            android:id="@+id/attachmentScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none"
+            android:visibility="gone"
+            android:layout_marginBottom="7dp">
+
+            <LinearLayout
+                android:id="@+id/attachmentContainer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <EditText
+            android:id="@+id/editMessage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@null"
+            android:hint="Message..."
+            android:textColorHint="@color/text3"
+            android:textColor="@color/text1"
+            android:textSize="15sp"
+            android:lineSpacingExtra="3dp"
+            android:minLines="1"
+            android:maxLines="5"
+            android:scrollbars="vertical"
+            android:isScrollContainer="true"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="8dp"
+            android:inputType="textCapSentences|textMultiLine"
+            android:imeOptions="actionNone" />
+
+
+        <LinearLayout
+            android:id="@+id/voicePanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="10dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <View
+                    android:id="@+id/voiceDot"
+                    android:layout_width="8dp"
+                    android:layout_height="8dp"
+                    android:background="@drawable/voice_dot" />
+
+                <TextView
+                    android:id="@+id/voiceStatus"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:singleLine="true"
+                    android:textColor="@color/accent"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/voiceTimer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/text3"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <com.codeassist.ai.voice.WaveformView
+                android:id="@+id/voiceWave"
+                android:layout_width="match_parent"
+                android:layout_height="28dp"
+                android:layout_marginTop="8dp" />
+
+            <TextView
+                android:id="@+id/voiceTranscript"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:ellipsize="start"
+                android:maxLines="3"
+                android:textColor="@color/text1"
+                android:textSize="15sp"
+                android:lineSpacingExtra="3dp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/voiceHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textColor="@color/text3"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <ImageButton
+                android:id="@+id/btnPlus"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/circle_btn"
+                android:src="@drawable/ic_plus"
+                android:padding="9dp"
+                app:tint="@color/text2"
+                android:contentDescription="Add attachment" />
+
+            <TextView
+                android:id="@+id/chipModel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/chip_small"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:paddingTop="7dp"
+                android:paddingBottom="7dp"
+                android:text="Local only"
+                android:textColor="@color/text2"
+                android:textSize="12sp"
+                android:drawablePadding="5dp"
+                android:drawableStart="@drawable/ic_sparkle"
+                android:drawableTint="@color/accent" />
+
+            <TextView
+                android:id="@+id/chipTools"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/chip_small"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp"
+                android:text="Tools"
+                android:textColor="@color/text2"
+                android:textSize="12sp"
+                android:drawablePadding="5dp"
+                android:drawableStart="@drawable/ic_tools"
+                android:drawableTint="@color/text2" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="1dp" />
+
+            <TextView
+                android:id="@+id/textCounter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="10dp"
+                android:textColor="@color/text3"
+                android:textSize="11sp"
+                android:visibility="gone" />
+
+            <ImageButton
+                android:id="@+id/btnTune"
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:background="@drawable/chip_small"
+                android:src="@drawable/ic_tune"
+                android:padding="8dp"
+                app:tint="@color/text2"
+                android:contentDescription="Composer options" />
+
+            <com.codeassist.ai.voice.MicButtonView
+                android:id="@+id/btnMic"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="8dp" />
+
+            <ImageButton
+                android:id="@+id/btnSend"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/send_btn_state"
+                android:src="@drawable/ic_send"
+                android:padding="10dp"
+                app:tint="#FFEAF6FF"
+                android:enabled="false"
+                android:contentDescription="Send" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
