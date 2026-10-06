@@ -19,7 +19,11 @@ import com.codeassist.ai.data.Store
 import com.codeassist.ai.home.HomeFragment
 import com.codeassist.ai.projects.ProjectsFragment
 import com.codeassist.ai.settings.SettingsFragment
+import com.codeassist.ai.service.HandsFree
+import com.codeassist.ai.service.HealthCheck
+import com.codeassist.ai.settings.BatteryDialogs
 import com.codeassist.ai.settings.VoiceAiFragment
+import com.codeassist.ai.voice.WakeCoordinator
 import com.codeassist.ai.workspace.WorkspaceActivity
 
 /**
@@ -34,6 +38,10 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_OPEN_CHAT = "open_chat_id"
+
+        /** Set by the "Haan? Maine suna" notification: start listening as soon as the home screen is up. */
+        const val EXTRA_WAKE = "wake_start"
+        const val EXTRA_WAKE_TEXT = "wake_text"
         private const val TAG_HOME = "home"
     }
 
@@ -107,12 +115,43 @@ class MainActivity : AppCompatActivity() {
         handleIntent(intent)
     }
 
+    override fun onStart() {
+        super.onStart()
+        WakeCoordinator.appVisible = true
+        // wake word heard while another screen (settings, chats ...) is open: go back to the home screen
+        WakeCoordinator.activityHook = { _ ->
+            drawer.closeDrawer(GravityCompat.START)
+            if (supportFragmentManager.backStackEntryCount > 0) {
+                supportFragmentManager.popBackStackImmediate(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
+            }
+        }
+        // the user opened the app: first record whether Android killed the hands-free service while the app was
+        // away (part 2B health check), then bring it back: this is the allowed moment for a microphone service
+        val askBattery = HealthCheck.onAppStart(this)
+        HandsFree.rearmIfNeeded(this)
+        if (askBattery) BatteryDialogs.showKilledPrompt(this)
+    }
+
+    override fun onStop() {
+        WakeCoordinator.appVisible = false
+        WakeCoordinator.activityHook = null
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         refreshDrawer()
     }
 
     private fun handleIntent(i: Intent?) {
+        if (i?.getBooleanExtra(EXTRA_WAKE, false) == true) {
+            WakeCoordinator.setPending(i.getStringExtra(EXTRA_WAKE_TEXT).orEmpty())
+            i.removeExtra(EXTRA_WAKE)
+            i.removeExtra(EXTRA_WAKE_TEXT)
+            if (supportFragmentManager.backStackEntryCount > 0) {
+                supportFragmentManager.popBackStackImmediate(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
+            }
+        }
         val chatId = i?.getStringExtra(EXTRA_OPEN_CHAT) ?: return
         i.removeExtra(EXTRA_OPEN_CHAT)
         openChat(chatId)

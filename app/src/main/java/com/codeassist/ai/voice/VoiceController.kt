@@ -17,6 +17,8 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.core.content.ContextCompat
+import com.codeassist.ai.ai.ChatRunner
+import com.codeassist.ai.ai.ConvKpi
 import com.codeassist.ai.data.Store
 import java.util.Locale
 
@@ -28,6 +30,14 @@ import java.util.Locale
  *
  * Modes: TAP (one utterance, auto-stop on pause), HOLD (push-to-talk: release sends),
  * CONTINUOUS (listen -> reply -> speak -> listen again until stopped or the user says "bas").
+ *
+ * Phase 2 (audit PDF Sec 9.1 / 9.4 / 9.7), all on top of the same engines:
+ *  - pause guard: an unfinished-sounding sentence keeps the mic open a little longer ([Endpointing])
+ *  - follow-up window: after a spoken reply the mic re-opens for ~8 s without another tap
+ *  - dialog acts: "hmm / haan" is not sent as a message, "aage batao" resumes, "dobara bolo" repeats
+ *  - barge-in: talking over the assistant stops it ([BargeInDetector]); the cut text can be resumed
+ *  - filler: a cached "ek second" is played when a slow brain is thinking ([PhraseCache])
+ *  - audio-focus loss (a call, another app) stops speech instead of talking over it
  */
 class VoiceController(context: Context, private val cb: Callbacks) {
 
@@ -82,6 +92,14 @@ class VoiceController(context: Context, private val cb: Callbacks) {
 
         fun recognitionAvailable(context: Context): Boolean =
             SpeechRecognizer.isRecognitionAvailable(context.applicationContext)
+
+        private const val RESUME_TTL_MS = 60_000L
+        private const val ANSWER_WINDOW_MS = 10_000L
+        private const val FILLER_FIRST_MS = 1_600L
+        private const val FILLER_GAP_MS = 7_000L
+
+        /** After the wake phrase: how long the mic waits for the first word (audit Sec 9.4: ~6 s). */
+        private const val WAKE_WINDOW_MS = 6_000L
     }
 
     private val app: Context = context.applicationContext
@@ -92,6 +110,9 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     var mode: Mode = Mode.TAP
         private set
 
+    /** True while a conversation is open: a voice turn is in progress or a follow-up window may open. */
+    val sessionActive: Boolean get() = voiceTurn || continuousOn || state != State.IDLE
+
     private var recognizer: SpeechRecognizer? = null
     private val collected = StringBuilder()
     private var startedAt = 0L
@@ -101,11 +122,45 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     private var continuousOn = false
     private var busyRetries = 0
 
+    // Phase 2 conversation state
+    private var followUpMode = false
+    private var followUpDeadline = 0L
+    private var followUpCounted = false
+    private var reopenAsFollowUp = false
+    private var speechSeen = false
+    private var extendRounds = 0
+    private var extendActive = false
+    private var voiceTurn = false
+    private var fromBarge = false
+    private var endOfTurnAt = 0L
+    private var firstAudioPending = false
+    private var firstAudioFast = false
+    private var expectAnswer = false
+    private var pendingQuestionUntil = 0L
+    private var resumeText: String? = null
+    private var resumeAt = 0L
+    private var lastSpoken: String = ""
+    private var fillerCount = 0
+    private var fillerAttempts = 0
+    private var wakePending = false // opened by the wake word and nothing was said yet
+
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var afterTtsReady: (() -> Unit)? = null
     private var lastUtterance: String = ""
+    private var speakBase: String = ""
+    private val tracker = SpokenTracker()
     private var focusRequest: AudioFocusRequest? = null
+    private var bargeDetector: BargeInDetector? = null
+
+    private val phrases = PhraseCache(context)
+
+    init {
+        ConvKpi.init(app)
+    }
+    private var cacheTts: TextToSpeech? = null
+    private var cacheReady = false
+    private var cachePreparedKey = ""
 
     // ---------- public control ----------
 
@@ -116,6 +171,32 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     fun startContinuous() {
         continuousOn = true
         begin(Mode.CONTINUOUS)
+    }
+
+    /**
+     * The wake phrase was heard. [initial] = words said right after it ("hey code assist time batao" ->
+     * "time batao"): when present they are sent as the user's turn at once, otherwise the mic opens for a
+     * short initial-silence window (a quiet close counts as a possible false wake, KPI wake_empty).
+     */
+    fun startFromWake(initial: String) {
+        if (state != State.IDLE) return
+        val text = initial.trim()
+        if (text.isEmpty()) {
+            begin(Mode.TAP, followUp = true, windowMs = WAKE_WINDOW_MS, wake = true)
+            return
+        }
+        voiceTurn = true
+        followUpMode = false
+        wakePending = false
+        silentRounds = 0
+        ConvKpi.inc("voice_turns")
+        endOfTurnAt = SystemClock.elapsedRealtime()
+        firstAudioPending = true
+        firstAudioFast = false
+        mode = Mode.TAP
+        setState(State.THINKING)
+        scheduleFillers()
+        cb.onFinalText(text, 0L)
     }
 
     /** Finger released on the mic. [cancel] = slid left to discard. */
@@ -140,6 +221,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         if (state != State.LISTENING) return
         holding = false
         releasing = true
+        main.removeCallbacks(extendTimeout)
+        main.removeCallbacks(followUpTimeout)
         try {
             recognizer?.stopListening()
         } catch (_: Exception) {
@@ -162,8 +245,19 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         continuousOn = false
         holding = false
         releasing = false
+        voiceTurn = false
+        followUpMode = false
+        extendActive = false
+        reopenAsFollowUp = false
+        fromBarge = false
+        expectAnswer = false
+        wakePending = false
         main.removeCallbacks(releaseTimeout)
         main.removeCallbacks(restartRunnable)
+        main.removeCallbacks(extendTimeout)
+        main.removeCallbacks(followUpTimeout)
+        main.removeCallbacks(reopenRunnable)
+        cancelFillers()
         try {
             recognizer?.cancel()
         } catch (_: Exception) {
@@ -178,19 +272,38 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     /** Owner decided not to answer (e.g. auto-send is off): leave THINKING. */
     fun idle() {
         if (state == State.THINKING) {
-            if (continuousOn && mode == Mode.CONTINUOUS) begin(Mode.CONTINUOUS) else setState(State.IDLE)
+            cancelFillers()
+            if (continuousOn && mode == Mode.CONTINUOUS) {
+                begin(Mode.CONTINUOUS)
+            } else {
+                voiceTurn = false
+                setState(State.IDLE)
+            }
         }
     }
 
-    /** The AI reply (or error) is ready. [spoken] null/blank = say nothing. */
-    fun replyReady(spoken: String?) {
+    /**
+     * The AI reply (or error) is ready. [spoken] null/blank = say nothing.
+     * [expectsAnswer]: the reply asked a question, so a bare "haan / nahi" in the next ~10 s is an answer.
+     * [fast]: the reply came from the Tier-0 fast path (no filler, separate latency target).
+     */
+    fun replyReady(spoken: String?, expectsAnswer: Boolean = false, fast: Boolean = false) {
         if (state != State.THINKING) return
-        if (spoken.isNullOrBlank()) afterSpeaking() else speakNow(spoken)
+        cancelFillers()
+        firstAudioFast = fast
+        expectAnswer = expectsAnswer
+        if (spoken.isNullOrBlank()) {
+            voiceTurn = false // nothing was spoken, so no follow-up window
+            afterSpeaking()
+        } else {
+            speakNow(spoken)
+        }
     }
 
     /** Speak a reply that was typed (Settings: speak replies = always) when nothing else is running. */
     fun speakIfIdle(text: String) {
         if (state != State.IDLE) return
+        firstAudioPending = false
         speakNow(text)
     }
 
@@ -202,6 +315,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
 
     fun destroy() {
         stopAll()
+        WakeCoordinator.setBusy(this, false)
         main.removeCallbacksAndMessages(null)
         try {
             recognizer?.destroy()
@@ -216,39 +330,76 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         }
         tts = null
         ttsReady = false
+        try {
+            cacheTts?.shutdown()
+        } catch (_: Exception) {
+            // ignore
+        }
+        cacheTts = null
+        cacheReady = false
+        phrases.release()
     }
 
     /** Used by the options screen so "Test voice" shares the configured engine. */
     fun sample(text: String) {
         if (state == State.LISTENING) return
-        speakNow(text)
+        firstAudioPending = false
+        speakNow(text, countTurn = false)
     }
 
     // ---------- listening ----------
 
-    private fun begin(m: Mode) {
+    private fun hasMic(): Boolean =
+        ContextCompat.checkSelfPermission(app, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun begin(
+        m: Mode,
+        followUp: Boolean = false,
+        barge: Boolean = false,
+        windowMs: Long = -1L,
+        wake: Boolean = false
+    ) {
         if (!SpeechRecognizer.isRecognitionAvailable(app)) {
-            cb.onMessage("Is phone par speech recognition service nahi hai. Google app install / enable karo.")
+            if (!followUp) cb.onMessage("Is phone par speech recognition service nahi hai. Google app install / enable karo.")
             continuousOn = false
+            voiceTurn = false
             return
         }
-        if (ContextCompat.checkSelfPermission(app, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        if (!hasMic()) {
             continuousOn = false
-            cb.onNeedPermission()
+            voiceTurn = false
+            if (!followUp) cb.onNeedPermission()
             return
         }
         stopSpeech()
         main.removeCallbacks(restartRunnable)
+        main.removeCallbacks(extendTimeout)
+        main.removeCallbacks(followUpTimeout)
+        main.removeCallbacks(reopenRunnable)
         mode = m
         holding = m == Mode.HOLD
         releasing = false
         collected.setLength(0)
         silentRounds = 0
         busyRetries = 0
+        followUpMode = followUp
+        fromBarge = barge
+        wakePending = wake
+        speechSeen = false
+        extendRounds = 0
+        extendActive = false
+        followUpCounted = false
         startedAt = SystemClock.elapsedRealtime()
+        if (followUp) {
+            val window = if (windowMs > 0L) windowMs else Store.followUpMs()
+            followUpDeadline = startedAt + window
+            if (!wake) ConvKpi.inc("followup_open")
+            main.postDelayed(followUpTimeout, window)
+        }
         cb.onPartial("")
         setState(State.LISTENING)
         startRecognizer()
+        ensurePhraseCache()
     }
 
     private fun startRecognizer() {
@@ -268,9 +419,12 @@ class VoiceController(context: Context, private val cb: Callbacks) {
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, Store.sttPreferOffline)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, app.packageName)
-            // Hindi sentences are verb-final: allow a longer pause before the utterance is closed
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1600L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1300L)
+            // Hindi sentences are verb-final, so a pause often comes before the verb. With the pause guard on,
+            // the recognizer may close sooner (the guard re-opens it when the sentence sounds unfinished);
+            // with it off, keep the long Phase-1 silence. Some recognizers ignore these hints.
+            val smart = Store.smartEndpoint && mode != Mode.HOLD
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, if (smart) 1000L else 1600L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, if (smart) 800L else 1300L)
         }
         try {
             r.startListening(intent)
@@ -287,12 +441,68 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         if (releasing && state == State.LISTENING) finishUtterance()
     }
 
+    /** Pause guard ran out: nothing more was said, so send what we have. */
+    private val extendTimeout = Runnable {
+        if (state == State.LISTENING && extendActive && !speechSeen) {
+            extendActive = false
+            try {
+                recognizer?.cancel()
+            } catch (_: Exception) {
+                // already stopped
+            }
+            finishUtterance()
+        }
+    }
+
+    /** Follow-up window ran out without speech: the session goes back to standby, quietly. */
+    private val followUpTimeout = Runnable {
+        if (state == State.LISTENING && followUpMode && !speechSeen && collected.isEmpty()) {
+            countQuietClose()
+            try {
+                recognizer?.cancel()
+            } catch (_: Exception) {
+                // already stopped
+            }
+            collected.setLength(0)
+            cb.onPartial("")
+            quietEnd()
+        }
+    }
+
+    private val reopenRunnable = Runnable {
+        if (state != State.IDLE) return@Runnable
+        if (continuousOn) {
+            begin(Mode.CONTINUOUS)
+        } else if (reopenAsFollowUp) {
+            reopenAsFollowUp = false
+            begin(Mode.TAP, followUp = true)
+        }
+    }
+
     private fun join(a: String, b: String): String =
         if (a.isBlank()) b else if (b.isBlank()) a else "$a $b"
 
+    private fun markSpeech() {
+        if (speechSeen) return
+        speechSeen = true
+        main.removeCallbacks(followUpTimeout)
+        main.removeCallbacks(extendTimeout)
+        if (extendActive) {
+            extendActive = false
+            ConvKpi.inc("endpoint_saved")
+        }
+        if (followUpMode && !followUpCounted) {
+            followUpCounted = true
+            if (wakePending) wakePending = false else ConvKpi.inc("followup_used")
+        }
+    }
+
     private val listener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
+        override fun onBeginningOfSpeech() {
+            if (state == State.LISTENING) markSpeech()
+        }
+
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {}
         override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -304,6 +514,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         override fun onPartialResults(partialResults: Bundle?) {
             if (state != State.LISTENING) return
             val t = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
+            if (t.isNotBlank()) markSpeech()
             cb.onPartial(join(collected.toString(), t))
         }
 
@@ -317,6 +528,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
             if (mode == Mode.HOLD && holding && !releasing) {
                 cb.onPartial(collected.toString())
                 main.postDelayed(restartRunnable, 160L)
+            } else if (shouldExtend()) {
+                startExtension()
             } else {
                 finishUtterance()
             }
@@ -328,6 +541,11 @@ class VoiceController(context: Context, private val cb: Callbacks) {
                 SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
                     if (mode == Mode.HOLD && holding && !releasing) {
                         main.postDelayed(restartRunnable, 160L)
+                    } else if (followUpMode && !speechSeen && !releasing && collected.isEmpty() &&
+                        SystemClock.elapsedRealtime() + 300L < followUpDeadline
+                    ) {
+                        // the platform gave up earlier than our window: listen again until the window ends
+                        main.postDelayed(restartRunnable, 200L)
                     } else {
                         finishUtterance()
                     }
@@ -361,9 +579,32 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         }
     }
 
+    // ---------- pause guard (Endpointing) ----------
+
+    private fun shouldExtend(): Boolean =
+        Store.smartEndpoint && mode != Mode.HOLD && !releasing && extendRounds < 2 &&
+            Endpointing.isIncomplete(collected.toString())
+
+    private fun startExtension() {
+        val text = collected.toString()
+        extendRounds++
+        if (extendRounds == 1) ConvKpi.inc("endpoint_guard")
+        extendActive = true
+        speechSeen = false
+        cb.onPartial(text)
+        main.removeCallbacks(extendTimeout)
+        main.postDelayed(restartRunnable, 120L)
+        main.postDelayed(extendTimeout, 120L + Endpointing.extraWaitMs(text))
+    }
+
+    // ---------- finishing an utterance ----------
+
     private fun finishUtterance() {
         main.removeCallbacks(releaseTimeout)
         main.removeCallbacks(restartRunnable)
+        main.removeCallbacks(extendTimeout)
+        main.removeCallbacks(followUpTimeout)
+        extendActive = false
         val text = collected.toString().trim()
         val duration = SystemClock.elapsedRealtime() - startedAt
         collected.setLength(0)
@@ -372,29 +613,103 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         cb.onPartial("")
 
         if (text.isEmpty()) {
+            if (fromBarge) ConvKpi.inc("barge_false") // we stopped the assistant for nothing
+            fromBarge = false
             silentRounds++
+            if (followUpMode) {
+                countQuietClose()
+                quietEnd()
+                return
+            }
             if (mode == Mode.CONTINUOUS && continuousOn && silentRounds < 3) {
                 main.postDelayed(restartRunnable, 250L)
             } else {
                 if (mode != Mode.HOLD) cb.onMessage("Kuch sunai nahi diya.")
                 continuousOn = false
+                voiceTurn = false
                 setState(State.IDLE)
             }
             return
         }
-        if (mode == Mode.CONTINUOUS && SpeechText.isStopPhrase(text)) {
-            continuousOn = false
-            setState(State.IDLE)
-            return
+        fromBarge = false
+        wakePending = false
+
+        val act = DialogActs.classify(
+            text,
+            DialogActs.Context(
+                pendingQuestion = SystemClock.elapsedRealtime() < pendingQuestionUntil,
+                hasResume = hasResume(),
+                hasRepeat = lastSpoken.isNotBlank(),
+                sessionLike = followUpMode || mode == Mode.CONTINUOUS
+            )
+        )
+        when (act) {
+            DialogActs.Act.BACKCHANNEL -> {
+                ConvKpi.inc("backchannel_ignored")
+                if (mode == Mode.CONTINUOUS && continuousOn) main.postDelayed(restartRunnable, 250L) else quietEnd()
+                return
+            }
+            DialogActs.Act.STOP, DialogActs.Act.GOODBYE -> {
+                continuousOn = false
+                quietEnd()
+                return
+            }
+            DialogActs.Act.RESUME -> {
+                val rest = resumeText
+                resumeText = null
+                if (rest != null) {
+                    ConvKpi.inc("resume_used")
+                    followUpMode = false
+                    voiceTurn = true
+                    speakNow(rest)
+                    return
+                }
+            }
+            DialogActs.Act.REPEAT -> {
+                if (lastSpoken.isNotBlank()) {
+                    ConvKpi.inc("repeat_used")
+                    followUpMode = false
+                    voiceTurn = true
+                    speakNow(lastSpoken)
+                    return
+                }
+            }
+            else -> Unit
         }
+
         silentRounds = 0
+        followUpMode = false
+        voiceTurn = true
+        ConvKpi.inc("voice_turns")
+        endOfTurnAt = SystemClock.elapsedRealtime()
+        firstAudioPending = true
+        firstAudioFast = false
         setState(State.THINKING)
+        scheduleFillers()
         cb.onFinalText(text, duration)
+    }
+
+    /** A follow-up / wake window closed with nothing said. After a wake word it is a possible false accept. */
+    private fun countQuietClose() {
+        if (wakePending) {
+            wakePending = false
+            ConvKpi.inc("wake_empty")
+        } else {
+            ConvKpi.inc("followup_timeout")
+        }
+    }
+
+    private fun quietEnd() {
+        voiceTurn = false
+        followUpMode = false
+        reopenAsFollowUp = false
+        setState(State.IDLE)
     }
 
     private fun cancelListening() {
         main.removeCallbacks(releaseTimeout)
         main.removeCallbacks(restartRunnable)
+        main.removeCallbacks(extendTimeout)
         try {
             recognizer?.cancel()
         } catch (_: Exception) {
@@ -412,22 +727,106 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         cb.onMessage(message)
     }
 
+    // ---------- filler while a slow brain thinks (PhraseCache) ----------
+
+    private val fillerRunnable = Runnable {
+        if (state != State.THINKING || !Store.fillers) return@Runnable
+        val run = ChatRunner.current
+        // fast path (and nothing running yet): never a filler. Max 2, at least ~7 s apart.
+        if (run == null || run.engine == "tool") return@Runnable
+        fillerAttempts++
+        val kind = if (fillerCount == 0) PhraseCache.Kind.ACK else PhraseCache.Kind.SLOW
+        if (phrases.play(kind)) {
+            fillerCount++
+            ConvKpi.inc("filler_played")
+        }
+        if (fillerCount < 2 && fillerAttempts < 4) main.postDelayed(fillerRunnable, FILLER_GAP_MS)
+    }
+
+    private fun scheduleFillers() {
+        fillerCount = 0
+        fillerAttempts = 0
+        main.removeCallbacks(fillerRunnable)
+        if (Store.fillers) main.postDelayed(fillerRunnable, FILLER_FIRST_MS)
+    }
+
+    private fun cancelFillers() {
+        main.removeCallbacks(fillerRunnable)
+        phrases.stop()
+    }
+
+    private fun voiceKey(): String = Store.ttsVoice + "|" + Store.ttsSpeed + "|en-IN"
+
+    /** Synthesizes the filler phrases on a second TTS engine so the reply engine's queue is never delayed. */
+    private fun ensurePhraseCache() {
+        if (!Store.fillers) return
+        val key = voiceKey()
+        val existing = cacheTts
+        if (existing != null) {
+            if (cacheReady && key != cachePreparedKey) {
+                configure(existing, "Hmm ek second")
+                phrases.prepare(existing, key)
+                cachePreparedKey = key
+            }
+            return
+        }
+        cacheTts = TextToSpeech(app) { status ->
+            main.post {
+                val engine = cacheTts ?: return@post
+                if (status != TextToSpeech.SUCCESS) {
+                    cacheTts = null
+                    return@post
+                }
+                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) {
+                        main.post { phrases.onSynthesized(utteranceId, true) }
+                    }
+
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        main.post { phrases.onSynthesized(utteranceId, false) }
+                    }
+
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        main.post { phrases.onSynthesized(utteranceId, false) }
+                    }
+                })
+                configure(engine, "Hmm ek second")
+                val k = voiceKey()
+                phrases.prepare(engine, k)
+                cachePreparedKey = k
+                cacheReady = true
+            }
+        }
+    }
+
     // ---------- speaking ----------
 
-    private fun speakNow(raw: String) {
+    private fun hasResume(): Boolean =
+        resumeText != null && SystemClock.elapsedRealtime() - resumeAt < RESUME_TTL_MS
+
+    private fun speakNow(raw: String, countTurn: Boolean = true) {
         val clean = SpeechText.clean(raw)
         if (clean.isBlank()) {
             if (state == State.THINKING) afterSpeaking()
             return
         }
+        cancelFillers()
+        stopBargeWatch()
+        resumeText = null
+        lastSpoken = clean
         setState(State.SPEAKING)
+        if (countTurn) ConvKpi.inc("speaking_turns")
         ensureTts {
             val engine = tts
             if (engine == null || state != State.SPEAKING) return@ensureTts
             configure(engine, clean)
             requestFocus()
             val pieces = SpeechText.chunks(clean, 500)
+            tracker.reset(clean, pieces)
             val base = "r" + System.currentTimeMillis()
+            speakBase = base
             lastUtterance = base + "_" + (pieces.size - 1)
             for (i in pieces.indices) {
                 val queue = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
@@ -483,8 +882,21 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         }
     }
 
+    private fun chunkIndex(utteranceId: String?): Int {
+        val id = utteranceId ?: return -1
+        if (speakBase.isEmpty() || !id.startsWith(speakBase + "_")) return -1
+        return id.substringAfterLast('_').toIntOrNull() ?: -1
+    }
+
     private val utteranceListener = object : UtteranceProgressListener() {
-        override fun onStart(utteranceId: String?) {}
+        override fun onStart(utteranceId: String?) {
+            main.post { chunkStarted(chunkIndex(utteranceId)) }
+        }
+
+        override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+            val index = chunkIndex(utteranceId)
+            if (index >= 0) main.post { tracker.onRange(index, end) }
+        }
 
         override fun onDone(utteranceId: String?) {
             if (utteranceId == lastUtterance) main.post { finishedSpeaking() }
@@ -500,27 +912,122 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         }
     }
 
+    private fun chunkStarted(index: Int) {
+        if (index < 0 || state != State.SPEAKING) return
+        tracker.onChunkStart(index)
+        if (index == 0) {
+            if (firstAudioPending) {
+                firstAudioPending = false
+                ConvKpi.recordFirstAudio(SystemClock.elapsedRealtime() - endOfTurnAt, firstAudioFast)
+            }
+            startBargeWatch()
+        }
+    }
+
     private fun finishedSpeaking() {
+        stopBargeWatch()
         abandonFocus()
-        if (state == State.SPEAKING) afterSpeaking()
+        if (state == State.SPEAKING) {
+            resumeText = null
+            if (expectAnswer) pendingQuestionUntil = SystemClock.elapsedRealtime() + ANSWER_WINDOW_MS
+            expectAnswer = false
+            afterSpeaking()
+        }
     }
 
     private fun afterSpeaking() {
+        stopBargeWatch()
         if (continuousOn && mode == Mode.CONTINUOUS) {
             setState(State.IDLE)
-            main.postDelayed({ if (continuousOn && state == State.IDLE) begin(Mode.CONTINUOUS) }, 350L)
+            main.postDelayed(reopenRunnable, 350L)
+        } else if (voiceTurn && Store.followUpMs() > 0L && hasMic() &&
+            SpeechRecognizer.isRecognitionAvailable(app)
+        ) {
+            // follow-up window: the mic re-opens without another tap; silence ends it quietly
+            setState(State.IDLE)
+            reopenAsFollowUp = true
+            main.postDelayed(reopenRunnable, 400L)
         } else {
+            voiceTurn = false
             setState(State.IDLE)
         }
     }
 
     private fun stopSpeech() {
+        stopBargeWatch()
+        phrases.stop()
         try {
             tts?.stop()
         } catch (_: Exception) {
             // ignore
         }
         abandonFocus()
+    }
+
+    // ---------- barge-in ----------
+
+    private fun startBargeWatch() {
+        val level = Store.bargeIn
+        if (level == "off" || !hasMic() || state != State.SPEAKING) return
+        stopBargeWatch()
+        val detector = BargeInDetector(app, level == "strict", object : BargeInDetector.Listener {
+            override fun onCandidate() {
+                ConvKpi.inc("barge_candidates")
+            }
+
+            override fun onRejected() {
+                ConvKpi.inc("barge_rejected")
+            }
+
+            override fun onValid() {
+                handleBargeIn()
+            }
+
+            override fun onUnavailable(reason: String) {
+                // not fatal: the assistant keeps talking, the user can still tap the mic
+            }
+        })
+        bargeDetector = detector
+        detector.start()
+    }
+
+    private fun stopBargeWatch() {
+        val d = bargeDetector ?: return
+        bargeDetector = null
+        d.stop()
+    }
+
+    private fun handleBargeIn() {
+        if (state != State.SPEAKING) return
+        ConvKpi.inc("barge_valid")
+        resumeText = tracker.remainingFromSentence()
+        resumeAt = SystemClock.elapsedRealtime()
+        expectAnswer = false
+        stopSpeech() // also releases the mic before the recognizer takes it
+        voiceTurn = true
+        val m = if (continuousOn) Mode.CONTINUOUS else Mode.TAP
+        begin(m, barge = true)
+    }
+
+    // ---------- audio focus ----------
+
+    private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            main.post { focusLost() }
+        }
+    }
+
+    /** A call or another app took the audio: stop talking, keep the rest so "aage batao" can continue. */
+    private fun focusLost() {
+        if (state != State.SPEAKING) return
+        ConvKpi.inc("focus_loss")
+        resumeText = tracker.remainingFromSentence()
+        resumeAt = SystemClock.elapsedRealtime()
+        continuousOn = false
+        voiceTurn = false
+        expectAnswer = false
+        stopSpeech()
+        setState(State.IDLE)
     }
 
     private fun requestFocus() {
@@ -532,6 +1039,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
+            .setOnAudioFocusChangeListener(focusListener, main)
             .build()
         am.requestAudioFocus(request)
         focusRequest = request
@@ -546,6 +1054,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
 
     private fun setState(s: State) {
         state = s
+        // the hands-free engine must not hold the mic while a voice turn (or its follow-up gap) is open
+        WakeCoordinator.setBusy(this, sessionActive)
         cb.onState(s, mode)
     }
 }

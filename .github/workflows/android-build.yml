@@ -61,3 +61,16 @@ jobs:
           name: CodeAssistAI-release-unsigned-apk
           path: app/build/outputs/apk/release/app-release-unsigned.apk
           retention-days: 30
+
+      # Unit tests run after the APKs are uploaded, so a failing test never costs you the APK.
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --continue
+
+      - name: Upload unit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 14

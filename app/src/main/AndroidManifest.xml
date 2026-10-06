@@ -6,6 +6,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Voice input (asked at runtime, only when the user taps the mic) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Hands-free wake word (opt-in): microphone foreground service with a Stop notification -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- "Haan? Maine suna" notification may open the app over the lock screen. Google Play restricts this
+         permission to alarm / calling apps: delete this line for a Play build (the notification still works,
+         it just shows as a heads-up instead of opening the app). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- Alarm / timer quick actions -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
@@ -42,6 +51,17 @@
             android:name=".workspace.WorkspaceActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
+
+        <service
+            android:name=".service.AssistantService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Watchdog (part 2B): inexact alarm about every 15 min while hands-free is on; posts a notice if
+             Android killed the service. Needs no permission. -->
+        <receiver
+            android:name=".service.WatchdogReceiver"
+            android:exported="false" />
 
     </application>
 

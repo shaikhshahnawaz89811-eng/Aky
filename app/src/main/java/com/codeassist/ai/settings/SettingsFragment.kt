@@ -18,6 +18,7 @@ import androidx.fragment.app.Fragment
 import com.codeassist.ai.R
 import com.codeassist.ai.ai.ActivityLog
 import com.codeassist.ai.ai.BrainStatus
+import com.codeassist.ai.ai.ConvKpi
 import com.codeassist.ai.ai.Trace
 import com.codeassist.ai.data.Store
 
@@ -93,6 +94,9 @@ class SettingsFragment : Fragment() {
             valueRow(R.drawable.ic_chart, "Debug: last turns", Trace.count().toString() + " turns") { _, _ ->
                 showTrace()
             }
+            valueRow(R.drawable.ic_chart, "Debug: conversation KPIs", "") { _, _ ->
+                showKpi()
+            }
             noteRow(
                 "Activity log mein har phone action (torch, alarm, timer, call, app) dikhta hai. " +
                     "Torch, alarm aur timer wapas kiye ja sakte hain. Debug mein sirf timing aur status hota hai, message ka text nahi."
@@ -153,6 +157,26 @@ class SettingsFragment : Fragment() {
             .setNeutralButton("Clear log") { _, _ ->
                 ActivityLog.clear()
                 build()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showKpi() {
+        val ctx = requireContext()
+        ConvKpi.init(ctx)
+        val text = ConvKpi.report()
+        AlertDialog.Builder(ctx)
+            .setTitle("Conversation KPIs")
+            .setMessage(text)
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("CodeAssist KPI", text))
+                Toast.makeText(ctx, "Copy ho gaya", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("Reset") { _, _ ->
+                ConvKpi.reset()
+                Toast.makeText(ctx, "KPI counters reset", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Close", null)
             .show()

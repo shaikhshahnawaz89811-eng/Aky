@@ -1,12 +1,15 @@
 package com.codeassist.ai.settings
 
+import android.Manifest
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.DialogInterface
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.text.TextUtils
@@ -26,13 +29,22 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.SwitchCompat
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import com.codeassist.ai.R
+import com.codeassist.ai.ai.ConvKpi
 import com.codeassist.ai.ai.GeminiClient
 import com.codeassist.ai.ai.LocalPhi
 import com.codeassist.ai.ai.Modules
 import com.codeassist.ai.data.Store
+import com.codeassist.ai.service.AssistantService
+import com.codeassist.ai.service.BatterySetup
+import com.codeassist.ai.service.HandsFree
+import com.codeassist.ai.service.HealthCheck
 import com.codeassist.ai.voice.VoiceController
+import com.codeassist.ai.voice.WakeCoordinator
+import com.codeassist.ai.voice.WakeMatcher
+import com.codeassist.ai.voice.WakeSupport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -71,6 +83,7 @@ class VoiceAiFragment : Fragment() {
     )
 
     private companion object {
+        const val WAKE_CONSENT_VERSION = 1
         const val PRIMARY = 0
         const val GHOST = 1
         const val DANGER = 2
@@ -94,12 +107,25 @@ class VoiceAiFragment : Fragment() {
     private var testingKey = false
     private var geminiMessage: String? = null
     private lateinit var pickModel: ActivityResultLauncher<Array<String>>
+    private lateinit var wakePermissions: ActivityResultLauncher<Array<String>>
+    private var wakeSwitch: SwitchCompat? = null
+    private var settingWakeSwitch = false
     private val moduleListener: () -> Unit = { renderPhi(); renderBrain() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pickModel = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) Modules.startImport(uri)
+        }
+        wakePermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
+            if (view != null) {
+                if (HandsFree.hasMic(requireContext())) {
+                    finishEnableWake()
+                } else {
+                    toast("Mic permission ke bina wake word nahi chalega.")
+                    setWakeSwitch(false)
+                }
+            }
         }
     }
 
@@ -126,6 +152,7 @@ class VoiceAiFragment : Fragment() {
         voice = null
         phiCard = null
         geminiCard = null
+        wakeSwitch = null
         segLocal = null
         segGemini = null
         brainHint = null
@@ -171,6 +198,64 @@ class VoiceAiFragment : Fragment() {
             noteRow(
                 "Mic par tap = ek baar bolo. Mic dabaye rakho = push-to-talk: chhodte hi send, " +
                     "left slide = cancel, upar slide = continuous lock."
+            )
+        }
+
+        section("Natural conversation")
+        card {
+            valueRow(R.drawable.ic_history, "Follow-up window", followUpLabel()) { anchor, tv ->
+                popup(anchor, followUpOptions.map { it.first }, followUpLabel()) { picked ->
+                    Store.followUp = followUpOptions.first { it.first == picked }.second
+                    tv.text = picked
+                }
+            }
+            valueRow(R.drawable.ic_sound, "Beech mein bolna (barge-in)", bargeLabel()) { anchor, tv ->
+                popup(anchor, bargeOptions.map { it.first }, bargeLabel()) { picked ->
+                    Store.bargeIn = bargeOptions.first { it.first == picked }.second
+                    tv.text = picked
+                }
+            }
+            switchRow(R.drawable.ic_tune, "Adhoora sentence ruk kar sunna", Store.smartEndpoint) {
+                Store.smartEndpoint = it
+            }
+            switchRow(R.drawable.ic_chat, "Soch rahe ho toh \"ek second\" bolna", Store.fillers) {
+                Store.fillers = it
+            }
+            noteRow(
+                "Follow-up: jawab bolne ke baad mic khud thodi der khula rehta hai (silence = chup-chaap band). " +
+                    "Barge-in: assistant bol raha ho tab aap bolo toh wo ruk jaata hai; \"aage batao\" se wahin se dobara. " +
+                    "Is phone par echo cancellation: " + (if (com.codeassist.ai.voice.BargeInDetector.aecAvailable()) "hai" else "nahi hai") +
+                    ". Speaker par aur AEC ke bina false interrupt ho sakta hai: headset ya Strict use karo. " +
+                    "Barge-in ke dauran mic sirf naapa jaata hai, record ya save nahi hota."
+            )
+        }
+
+        section("Hands-free (wake word)")
+        card {
+            wakeSwitchRow()
+            valueRow(R.drawable.ic_mic, "Wake phrase", Store.wakePhrase) { _, tv -> editWakePhrase(tv) }
+            valueRow(R.drawable.ic_tune, "Sensitivity", wakeLevelLabel()) { anchor, tv ->
+                popup(anchor, wakeLevelOptions.map { it.first }, wakeLevelLabel()) { picked ->
+                    Store.wakeSensitivity = wakeLevelOptions.first { it.first == picked }.second
+                    tv.text = picked
+                }
+            }
+            infoRow(R.drawable.ic_history, "Status", wakeStatusText())
+            ConvKpi.init(requireContext())
+            infoRow(R.drawable.ic_bell, "Health", HealthCheck.summary())
+            valueRow(
+                R.drawable.ic_shield, "Battery setup",
+                if (BatterySetup.isUnrestricted(requireContext())) "Theek" else "Zaroori"
+            ) { _, _ -> BatteryDialogs.showGuide(requireContext()) }
+            valueRow(R.drawable.ic_mic, "Wake test", "10 try") { _, _ -> WakeTestDialog.show(requireContext()) }
+            noteRow(
+                "Opt-in. Awaaz sirf phone ke on-device recognizer se suni jaati hai: record nahi hoti, network par nahi jaati " +
+                    "(Android 13+ aur offline English India speech pack chahiye). Mic tab tak chalu rehta hai jab tak notification " +
+                    "dikhti hai; Stop wahin se dabao. Ye asli keyword-spotter nahi hai: phrase ka pehla shabd aksar kat jaata hai, " +
+                    "isliye Normal level \"code assist\" ya sirf \"assist\" bhi pakad leta hai. False trigger zyada lagein toh Strict karo. " +
+                    "Xiaomi / Oppo / Vivo / Samsung ka battery saver service band kar sakta hai: app kholte hi wo dobara chalu ho jaati hai, " +
+                    "aur ~15 minute mein ek notification bhi aati hai. Health line batati hai Android ne kitni baar band kiya; " +
+                    "Battery setup se phone ki settings sahi karo. Wake test se pata chalta hai phrase 10 mein se kitni baar pakda gaya."
             )
         }
 
@@ -727,6 +812,13 @@ class VoiceAiFragment : Fragment() {
         "Faster (1.5x)" to 1.5f
     )
 
+    private val followUpOptions = listOf("Off" to "off", "Normal (8 s)" to "normal", "Long (20 s)" to "long")
+    private val bargeOptions = listOf("Off" to "off", "Normal" to "normal", "Strict" to "strict")
+
+    private fun followUpLabel() = followUpOptions.firstOrNull { it.second == Store.followUp }?.first ?: followUpOptions[1].first
+
+    private fun bargeLabel() = bargeOptions.firstOrNull { it.second == Store.bargeIn }?.first ?: bargeOptions[0].first
+
     private fun micModeLabel() = if (Store.micMode == "continuous") "Continuous" else "Tap to talk"
 
     private fun speakLabel() = when (Store.speakReplies) {
@@ -846,6 +938,147 @@ class VoiceAiFragment : Fragment() {
             if (i < specs.size - 1) lp.marginEnd = dp(8)
             box.addView(button, lp)
         }
+    }
+
+    // ---------- hands-free (wake word) ----------
+
+    private val wakeLevelOptions = listOf("Strict" to "strict", "Normal" to "normal", "Loose" to "loose")
+
+    private fun wakeLevelLabel() = wakeLevelOptions.firstOrNull { it.second == Store.wakeSensitivity }?.first ?: "Normal"
+
+    private fun wakeStatusText(): String = when {
+        !Store.wakeWord -> "Off"
+        AssistantService.running -> WakeCoordinator.status
+        else -> "Band (app kholne par dobara chalu)"
+    }
+
+    private fun wakeSwitchRow() {
+        val row = inflateRow()
+        row.findViewById<ImageView>(R.id.rowIcon).setImageResource(R.drawable.ic_mic)
+        row.findViewById<TextView>(R.id.rowTitle).text = "Wake word (hands-free)"
+        row.findViewById<TextView>(R.id.rowValue).visibility = View.GONE
+        row.findViewById<ImageView>(R.id.rowChevron).visibility = View.GONE
+        val sw = row.findViewById<SwitchCompat>(R.id.rowSwitch)
+        sw.visibility = View.VISIBLE
+        sw.isChecked = Store.wakeWord
+        sw.setOnCheckedChangeListener { _, on ->
+            if (!settingWakeSwitch) {
+                if (on) requestEnableWake() else disableWake()
+            }
+        }
+        row.setOnClickListener { sw.toggle() }
+        wakeSwitch = sw
+        addRow(row)
+    }
+
+    private fun setWakeSwitch(on: Boolean) {
+        val sw = wakeSwitch ?: return
+        settingWakeSwitch = true
+        sw.isChecked = on
+        settingWakeSwitch = false
+    }
+
+    private fun requestEnableWake() {
+        val ctx = requireContext()
+        val check = WakeSupport.check(ctx)
+        if (!check.ok) {
+            AlertDialog.Builder(ctx)
+                .setTitle("Wake word yahan nahi chalega")
+                .setMessage(check.reason)
+                .setPositiveButton("Theek hai", null)
+                .show()
+            setWakeSwitch(false)
+            return
+        }
+        if (Store.wakeConsent >= WAKE_CONSENT_VERSION) {
+            askWakePermissions()
+            return
+        }
+        AlertDialog.Builder(ctx)
+            .setTitle("Hands-free listening")
+            .setMessage(
+                "Wake word on karne par:\n\n" +
+                    "• Phone ka mic chalu rehta hai (notification mein Stop button ke saath) jab tak aap band na karo.\n" +
+                    "• Awaaz sirf phone ke andar on-device recognizer se check hoti hai. Record, save ya internet par nahi bheji jaati.\n" +
+                    "• Aapke phrase ke bina kuch nahi hota. Phrase sunne par app khulti hai ya ek \"Haan? Maine suna\" notification aati hai.\n" +
+                    "• Battery thodi zyada kharch hogi. Kitni, Settings mein Debug: conversation KPIs mein dikhta hai.\n" +
+                    "• Kuch phones ka battery saver is service ko band kar deta hai.\n\n" +
+                    "Kabhi bhi is switch se ya notification ke Stop se band kar sakte ho."
+            )
+            .setPositiveButton("Samajh gaya, on karo") { _, _ ->
+                Store.wakeConsent = WAKE_CONSENT_VERSION
+                askWakePermissions()
+            }
+            .setNegativeButton("Cancel") { _, _ -> setWakeSwitch(false) }
+            .setOnCancelListener { setWakeSwitch(false) }
+            .show()
+    }
+
+    private fun askWakePermissions() {
+        val ctx = requireContext()
+        val need = ArrayList<String>()
+        if (!HandsFree.hasMic(ctx)) need.add(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            need.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (need.isEmpty()) finishEnableWake() else wakePermissions.launch(need.toTypedArray())
+    }
+
+    private fun finishEnableWake() {
+        Store.wakeWord = true
+        if (HandsFree.start(requireContext())) {
+            toast("Hands-free on")
+        } else {
+            Store.wakeWord = false
+            setWakeSwitch(false)
+            toast("Android ne hands-free service start nahi hone di. App khuli rakhkar dobara try karo.")
+        }
+    }
+
+    private fun disableWake() {
+        Store.wakeWord = false
+        HandsFree.stop(requireContext())
+        toast("Hands-free band")
+    }
+
+    private fun editWakePhrase(valueView: TextView) {
+        val ctx = requireContext()
+        val input = EditText(ctx).apply {
+            setText(Store.wakePhrase)
+            setSelection(text.length)
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            setPadding(dp(20), dp(14), dp(20), dp(14))
+        }
+        AlertDialog.Builder(ctx)
+            .setTitle("Wake phrase")
+            .setMessage("3-4 syllable ka alag sa phrase rakho. Aam naam (Rani, Sara) ya \"ok google\" jaise phrase mat rakho.")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val phrase = input.text.toString().trim()
+                val warning = WakeMatcher.phraseWarning(phrase)
+                if (phrase.isEmpty()) {
+                    toast("Phrase khali nahi ho sakta.")
+                } else if (warning == null) {
+                    saveWakePhrase(phrase, valueView)
+                } else {
+                    AlertDialog.Builder(ctx)
+                        .setTitle("Is phrase se dikkat ho sakti hai")
+                        .setMessage(warning)
+                        .setPositiveButton("Phir bhi rakho") { _, _ -> saveWakePhrase(phrase, valueView) }
+                        .setNegativeButton("Badlo", null)
+                        .show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun saveWakePhrase(phrase: String, valueView: TextView) {
+        Store.wakePhrase = phrase
+        valueView.text = Store.wakePhrase
     }
 
     private fun section(title: String, first: Boolean = false) {

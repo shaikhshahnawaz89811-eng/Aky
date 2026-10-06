@@ -48,6 +48,7 @@ import com.codeassist.ai.ui.ComposerController
 import com.codeassist.ai.ui.ZoomImageView
 import com.codeassist.ai.voice.MicButtonView
 import com.codeassist.ai.voice.VoiceController
+import com.codeassist.ai.voice.WakeCoordinator
 
 /**
  * Home = the chat itself (ChatGPT / Claude mobile pattern).
@@ -634,9 +635,32 @@ class HomeFragment : Fragment() {
         super.onResume()
         composer?.refreshAppearance()
         refreshBrainLabels()
+        // hands-free: the wake phrase was heard while this screen was away or the app was closed
+        WakeCoordinator.listener = wakeListener
+        val pendingWake = WakeCoordinator.takePending()
+        if (pendingWake != null) view?.post { handleWake(pendingWake) }
+    }
+
+    override fun onPause() {
+        if (WakeCoordinator.listener === wakeListener) WakeCoordinator.listener = null
+        super.onPause()
+    }
+
+    private val wakeListener = object : WakeCoordinator.Listener {
+        override fun onWake(text: String) = handleWake(text)
+    }
+
+    /** The wake phrase was heard (service) or the user tapped the wake notification. */
+    private fun handleWake(text: String) {
+        val v = voice ?: return
+        if (view == null || v.state != VoiceController.State.IDLE || ChatRunner.isRunning()) return
+        if (!hasMicPermission()) return
+        WakeCoordinator.buzz(requireContext())
+        v.startFromWake(text)
     }
 
     override fun onDestroyView() {
+        if (WakeCoordinator.listener === wakeListener) WakeCoordinator.listener = null
         if (ChatRunner.listener === runListener) ChatRunner.listener = null
         voice?.destroy()
         voice = null
@@ -743,7 +767,12 @@ class HomeFragment : Fragment() {
         val spoken: String? =
             if (message != null && message.state == null && !run.cancelled && speak) message.text else null
         if (v != null) {
-            if (run.viaVoice) v.replyReady(spoken) else if (spoken != null) v.speakIfIdle(spoken)
+            if (run.viaVoice) {
+                // a reply that ends in "?" opens a ~10 s window where a bare "haan / nahi" is an answer
+                v.replyReady(spoken, spoken?.trimEnd()?.endsWith("?") == true, run.engine == "tool")
+            } else if (spoken != null) {
+                v.speakIfIdle(spoken)
+            }
         }
     }
 

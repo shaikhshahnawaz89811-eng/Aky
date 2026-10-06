@@ -145,6 +145,89 @@ object Store {
         get() = prefs.getString("tts_voice", "") ?: ""
         set(v) = prefs.edit().putString("tts_voice", v).apply()
 
+    // ---------- Conversation (audit PDF Phase 2) ----------
+    /** Follow-up window after a spoken reply: "off" | "normal" (about 8 s) | "long" (about 20 s). */
+    var followUp: String
+        get() = prefs.getString("follow_up", "normal") ?: "normal"
+        set(v) = prefs.edit().putString("follow_up", v).apply()
+
+    fun followUpMs(): Long = when (followUp) {
+        "long" -> 20_000L
+        "off" -> 0L
+        else -> 8_000L
+    }
+
+    /**
+     * Talking over the assistant: "off" | "normal" | "strict". Until the user picks one it is "normal" only
+     * when the phone reports a hardware echo canceller (audit: AEC quality is device-dependent), else "off".
+     */
+    var bargeIn: String
+        get() = prefs.getString("barge_in", null)
+            ?: if (com.codeassist.ai.voice.BargeInDetector.aecAvailable()) "normal" else "off"
+        set(v) = prefs.edit().putString("barge_in", v).apply()
+
+    /** Keep listening a little longer when a sentence sounds unfinished (Hindi verb-final). */
+    var smartEndpoint: Boolean
+        get() = prefs.getBoolean("smart_endpoint", true)
+        set(v) = prefs.edit().putBoolean("smart_endpoint", v).apply()
+
+    /** Short spoken "ek second" while a slow brain thinks (never on the Tier-0 fast path). */
+    var fillers: Boolean
+        get() = prefs.getBoolean("fillers", true)
+        set(v) = prefs.edit().putBoolean("fillers", v).apply()
+
+    // ---------- Hands-free / wake word (audit PDF Phase 2, part 2A) ----------
+    /** Opt-in. Default OFF (audit: wake word is never on without the user choosing it). */
+    var wakeWord: Boolean
+        get() = prefs.getBoolean("wake_word", false)
+        set(v) = prefs.edit().putBoolean("wake_word", v).apply()
+
+    /** The phrase the user says. Default is 4 syllables and not a common name (audit B4). */
+    var wakePhrase: String
+        get() = prefs.getString("wake_phrase", "hey code assist")?.takeIf { it.isNotBlank() } ?: "hey code assist"
+        set(v) = prefs.edit().putString("wake_phrase", v.trim()).apply()
+
+    /** "strict" | "normal" | "loose": how many words of the phrase must be heard (see WakeMatcher). */
+    var wakeSensitivity: String
+        get() = prefs.getString("wake_sens", "normal") ?: "normal"
+        set(v) = prefs.edit().putString("wake_sens", v).apply()
+
+    /** Version of the wake-word consent notice the user accepted (0 = never). */
+    var wakeConsent: Int
+        get() = prefs.getInt("wake_consent", 0)
+        set(v) = prefs.edit().putInt("wake_consent", v).apply()
+
+    /** True while the hands-free service is alive; stays true if the process is killed (health check, part 2B). */
+    var wakeRunning: Boolean
+        get() = prefs.getBoolean("wake_running", false)
+        set(v) = prefs.edit().putBoolean("wake_running", v).apply()
+
+    /** Wall-clock time of the service's last heartbeat. */
+    var wakeHeartbeat: Long
+        get() = prefs.getLong("wake_heartbeat", 0L)
+        set(v) = prefs.edit().putLong("wake_heartbeat", v).apply()
+
+    // ---------- Hands-free health check (audit PDF Gap B3, part 2B) ----------
+    /** Android's boot counter when the service last started (-1 = unknown); tells a reboot from a battery-saver kill. */
+    var wakeBootCount: Int
+        get() = prefs.getInt("wake_boot_count", -1)
+        set(v) = prefs.edit().putInt("wake_boot_count", v).apply()
+
+    /** Wall-clock times (comma separated, newest last, max 10) when Android stopped the service behind our back. */
+    var wakeKillTimes: String
+        get() = prefs.getString("wake_kill_times", "") ?: ""
+        set(v) = prefs.edit().putString("wake_kill_times", v).apply()
+
+    /** The watchdog already posted its "hands-free ruk gaya" notification for the current kill. */
+    var wakeKillNotified: Boolean
+        get() = prefs.getBoolean("wake_kill_notified", false)
+        set(v) = prefs.edit().putBoolean("wake_kill_notified", v).apply()
+
+    /** Last time the app asked the user to fix battery settings (so it does not nag). */
+    var batteryPromptAt: Long
+        get() = prefs.getLong("battery_prompt_at", 0L)
+        set(v) = prefs.edit().putLong("battery_prompt_at", v).apply()
+
     // ---------- Projects ----------
     private fun <T> readList(key: String, type: Type): MutableList<T> {
         val json = prefs.getString(key, null) ?: return mutableListOf()
