@@ -729,19 +729,22 @@ class VoiceController(context: Context, private val cb: Callbacks) {
 
     // ---------- filler while a slow brain thinks (PhraseCache) ----------
 
-    // explicit type on purpose: the lambda re-posts itself, and Kotlin cannot infer a self-referencing val
-    private val fillerRunnable: Runnable = Runnable {
-        if (state != State.THINKING || !Store.fillers) return@Runnable
-        val run = ChatRunner.current
-        // fast path (and nothing running yet): never a filler. Max 2, at least ~7 s apart.
-        if (run == null || run.engine == "tool") return@Runnable
-        fillerAttempts++
-        val kind = if (fillerCount == 0) PhraseCache.Kind.ACK else PhraseCache.Kind.SLOW
-        if (phrases.play(kind)) {
-            fillerCount++
-            ConvKpi.inc("filler_played")
+    // An object (not a Runnable { } lambda) on purpose: it re-posts itself with `this`. A lambda that names its own
+    // val fails to compile ("recursive problem" / "must be initialized").
+    private val fillerRunnable: Runnable = object : Runnable {
+        override fun run() {
+            if (state != State.THINKING || !Store.fillers) return
+            val current = ChatRunner.current
+            // fast path (and nothing running yet): never a filler. Max 2, at least ~7 s apart.
+            if (current == null || current.engine == "tool") return
+            fillerAttempts++
+            val kind = if (fillerCount == 0) PhraseCache.Kind.ACK else PhraseCache.Kind.SLOW
+            if (phrases.play(kind)) {
+                fillerCount++
+                ConvKpi.inc("filler_played")
+            }
+            if (fillerCount < 2 && fillerAttempts < 4) main.postDelayed(this, FILLER_GAP_MS)
         }
-        if (fillerCount < 2 && fillerAttempts < 4) main.postDelayed(fillerRunnable, FILLER_GAP_MS)
     }
 
     private fun scheduleFillers() {

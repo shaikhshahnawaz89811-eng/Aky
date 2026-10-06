@@ -190,9 +190,11 @@ failure found.
 - `app/build.gradle` has `lint { checkReleaseBuilds = false; abortOnError = false }` so lint findings cannot fail the
   unsigned release build (lint still runs in its own CI step).
 
-**First real compiler run (GitHub Actions):** one error, `VoiceController.kt:743 Type checking has run into a recursive
-problem`. `fillerRunnable` re-posts itself inside its own lambda, and Kotlin cannot infer the type of a val that refers
-to itself. Fixed by giving it the explicit type `Runnable` (same for `AssistantService.heartbeat`, which also re-posts
-itself). A scan of all Kotlin files found no other self-referencing val. This was the only error the compiler reported
-in that run; the next run may show errors that this one hid, and the unit tests have not compiled yet.
-
+**Compiler runs on GitHub Actions (two so far):**
+1. `VoiceController.kt:743 Type checking has run into a recursive problem`: `fillerRunnable` re-posted itself inside its
+   own `Runnable { }` lambda. Adding an explicit type was not enough:
+2. `VoiceController.kt:744 Variable 'fillerRunnable' must be initialized`: a lambda cannot name the val it is being
+   assigned to. Final fix: `fillerRunnable` is now an `object : Runnable` that re-posts itself with `this` (same pattern
+   as `AssistantService.heartbeat` and `ComposerController.timerTick`, which were already written that way).
+A scan of all Kotlin files found no other lambda that names its own val, and no smart-cast on a mutable property.
+Each run only shows the errors the compiler reaches before it stops, so more may appear; unit tests have not compiled yet.
