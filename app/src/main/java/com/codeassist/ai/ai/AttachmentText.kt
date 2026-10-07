@@ -8,6 +8,8 @@ import com.codeassist.ai.data.AttachKind
 import com.codeassist.ai.data.Attachment
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.label.ImageLabeling
+import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.ByteArrayOutputStream
@@ -17,7 +19,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Turns picked attachments into something a model can actually use:
  *  - text / source files  -> inlined as text (both brains)
- *  - images               -> JPEG bytes for Gemini, optional local OCR for Qwen
+ *  - images               -> JPEG bytes for Gemini; for Qwen: on-device OCR text + rough object labels as plain text
  *  - ZIP / PDF / binaries -> reported as skipped, never silently dropped
  */
 object AttachmentText {
@@ -50,14 +52,14 @@ object AttachmentText {
                         } else if (left < 200) {
                             skipped.add(a.name + " (OCR text ke liye context mein jagah nahi)")
                         } else {
-                            val recognized = readImageText(ctx, a, left - 100)
+                            val recognized = analyzeImage(ctx, a, left - 100)
                             if (recognized.isNullOrBlank()) {
                                 ConvKpi.inc("ocr_failed")
-                                skipped.add(a.name + " (on-device OCR mein readable text nahi mila)")
+                                skipped.add(a.name + " (on-device analysis mein na text mila na koi cheez pehchani)")
                             } else {
                                 ConvKpi.inc("ocr_success")
-                                val block = "--- Screenshot OCR: " + a.name + " ---\n" +
-                                    recognized + "\n--- end OCR ---\n\n"
+                                val block = "--- Photo analysis (on-device): " + a.name + " ---\n" +
+                                    recognized + "\n--- end of photo analysis ---\n\n"
                                 text.append(block)
                                 left -= block.length
                             }
@@ -131,23 +133,76 @@ object AttachmentText {
         }
     }
 
-    /** Bundled ML Kit Latin OCR stays on-device; its text is only added to the local Qwen prompt. */
-    private fun readImageText(ctx: Context, a: Attachment, maxChars: Int): String? {
+    /**
+     * What the offline model gets instead of pixels: text found in the photo (bundled ML Kit Latin OCR) and the
+     * few most confident object / scene labels (bundled ML Kit image labeling, about 400 everyday classes). Both run
+     * on the phone. This is a rough description, not sight: the note at the end tells the model so, because a 1.5B
+     * model that is not told will happily "recognise" a face from a label like "Person".
+     */
+    private fun analyzeImage(ctx: Context, a: Attachment, maxChars: Int): String? {
         var bitmap: Bitmap? = null
-        var recognizer: com.google.mlkit.vision.text.TextRecognizer? = null
         return try {
-            val client = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-            recognizer = client
-            bitmap = decodeBitmap(ctx, a) ?: return null
-            val task = client.process(InputImage.fromBitmap(bitmap, 0))
-            Tasks.await(task, 20, TimeUnit.SECONDS).text.take(maxChars.coerceAtLeast(0))
+            val decoded = decodeBitmap(ctx, a)
+            bitmap = decoded
+            if (decoded == null) {
+                null
+            } else {
+                val image = InputImage.fromBitmap(decoded, 0)
+                val text = ocrText(image)
+                val labels = imageLabels(image)
+                if (text.isBlank() && labels.isEmpty()) {
+                    null
+                } else {
+                    val sb = StringBuilder()
+                    if (labels.isNotEmpty()) {
+                        sb.append("Detected in the photo (rough on-device guess): ").append(labels.joinToString(", ")).append('\n')
+                    }
+                    if (text.isNotBlank()) {
+                        // keep room for the closing note below: the OCR text is what gets cut when the budget is small
+                        sb.append("Text visible in the photo:\n")
+                            .append(text.trim().take((maxChars - 420).coerceAtLeast(60))).append('\n')
+                    }
+                    sb.append(
+                        "Note: you cannot see the photo itself. Answer only from the lines above, " +
+                            "never guess who a person is, and say so if the lines are not enough."
+                    )
+                    sb.toString().take(maxChars.coerceAtLeast(0))
+                }
+            }
         } catch (_: Exception) {
             null
         } catch (_: OutOfMemoryError) {
             null
         } finally {
-            recognizer?.close()
             bitmap?.recycle()
+        }
+    }
+
+    private fun ocrText(image: InputImage): String {
+        val client = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        return try {
+            Tasks.await(client.process(image), 20, TimeUnit.SECONDS).text
+        } catch (_: Exception) {
+            ""
+        } finally {
+            client.close()
+        }
+    }
+
+    private fun imageLabels(image: InputImage): List<String> {
+        val labeler = ImageLabeling.getClient(
+            ImageLabelerOptions.Builder().setConfidenceThreshold(0.6f).build()
+        )
+        return try {
+            Tasks.await(labeler.process(image), 20, TimeUnit.SECONDS)
+                .sortedByDescending { it.confidence }
+                .map { it.text }
+                .distinct()
+                .take(6)
+        } catch (_: Exception) {
+            emptyList()
+        } finally {
+            labeler.close()
         }
     }
 

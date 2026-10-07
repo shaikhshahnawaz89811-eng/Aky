@@ -89,10 +89,21 @@ object Store {
         get() = prefs.getBoolean("automatic_fallback", true)
         set(v) = prefs.edit().putBoolean("automatic_fallback", v).apply()
 
-    /** Opt-in, on-device Latin-script OCR for image attachments sent to Qwen. */
+    /**
+     * On-device photo reading for Qwen: text (OCR) and rough object labels go into the prompt as plain text.
+     * On by default now (offline fix part 2); without it the offline model could not use a photo at all.
+     */
     var localScreenshotOcr: Boolean
-        get() = prefs.getBoolean("local_screenshot_ocr", false)
+        get() = prefs.getBoolean("local_screenshot_ocr", true)
         set(v) = prefs.edit().putBoolean("local_screenshot_ocr", v).apply()
+
+    /**
+     * Short list of facts the user stated about themselves ("kind|text" lines, see LocalMemory). Kept on the phone,
+     * shown to the offline model at the top of every prompt. "bhool jao" in the chat clears it.
+     */
+    var userFacts: List<String>
+        get() = com.codeassist.ai.ai.LocalMemory.unpack(prefs.getString("user_facts", null))
+        set(v) = prefs.edit().putString("user_facts", com.codeassist.ai.ai.LocalMemory.pack(v)).apply()
 
     /** Context window (tokens) of the on-device model. Qwen2.5 1.5B keeps its cache small, so 4096 is the default. */
     var localContext: Int

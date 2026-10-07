@@ -13,6 +13,12 @@ class ActionHintTest {
         assertTrue(ActionHint.looksLikeAction("WhatsApp kholo"))
     }
 
+    @Test fun wakeAndReminderPhrasesMatch() {
+        assertTrue(ActionHint.looksLikeAction("Kal mujhe 8 bhaje uthna hai"))
+        assertTrue(ActionHint.looksLikeAction("subah 6 baje utha dena"))
+        assertTrue(ActionHint.looksLikeAction("10 minute baad yaad dilana"))
+    }
+
     @Test fun ordinaryChatDoesNotMatch() {
         assertFalse(ActionHint.looksLikeAction("Kotlin coroutines kya hote hain?"))
         assertFalse(ActionHint.looksLikeAction("mujhe ek kahani sunao"))

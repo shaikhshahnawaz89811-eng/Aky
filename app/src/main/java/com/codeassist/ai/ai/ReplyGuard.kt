@@ -37,6 +37,9 @@ object ReplyGuard {
         "japan", "chinese", "china", "korean", "korea", "mandarin", "kanji", "hanzi", "translat", "anuvad", "unicode"
     )
 
+    /** One character repeated 30+ times ("2000000000000..."): a digit or letter runaway, not a separator line. */
+    private val charRun = Regex("([^\\s\\-=*#_.~+|/\\\\])\\1{29,}")
+
     private val wordRegex = Regex("\\S+")
     private val sentenceEnds = charArrayOf('.', '!', '?', '\u0964', '\n')
 
@@ -72,8 +75,17 @@ object ReplyGuard {
             cut = loop.cut
             why = "repetition"
         }
+        val run = charRun.find(text)
+        var runawayCut = false
+        if (run != null && (cut < 0 || run.range.first < cut)) {
+            cut = run.range.first
+            why = "character run"
+            runawayCut = true
+        }
         if (cut >= 0) {
             val kept = trimToSentence(text.substring(0, cut), true)
+            // a code block that was cut open by a runaway is broken code: ask again instead of showing it
+            if (runawayCut && countFences(kept) % 2 == 1) return Result(kept, false, why)
             if (kept.length >= MIN_KEEP) return Result(finishSmall(kept, smallTalk), true, why + " trimmed")
             return Result(kept, false, why)
         }

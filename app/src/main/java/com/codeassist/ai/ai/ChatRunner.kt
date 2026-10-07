@@ -81,8 +81,7 @@ object ChatRunner {
         val history = all.subList(0, userIndex).filter { it.state == null && it.text.isNotBlank() }
         val provider = Store.brainProvider
 
-        val tool: Tier0.Result? =
-            if (latest.attachments.isEmpty()) Tier0.handle(app, latest.text) else null
+        val tool: Tier0.Result? = quickReply(app, latest, history)
         val engine = if (tool != null) "tool" else provider
         val run = Run(chatId, UUID.randomUUID().toString(), engine, viaVoice)
         current = run
@@ -122,6 +121,60 @@ object ChatRunner {
             finish(run, result)
         }
         return run
+    }
+
+    /**
+     * Answers that need no model at all, in this order: a bare "off" after a torch reply, a memory command
+     * ("yaad rakho ...", "bhool jao"), then the Tier-0 phone actions. When none matches, the message is read for
+     * facts the user states about themselves ("mera naam ... hai") and the brain answers.
+     */
+    private fun quickReply(app: Context, latest: Message, history: List<Message>): Tier0.Result? {
+        if (latest.attachments.isNotEmpty()) return null
+        val lastAi = history.lastOrNull { it.role == Role.AI }
+        val lastTool: String? = if (lastAi != null && lastAi.engine == "tool") lastAi.note else null
+        val quick = Tier0.followUp(app, latest.text, lastTool)
+            ?: memoryCommand(latest.text)
+            ?: Tier0.handle(app, latest.text)
+        if (quick == null) {
+            val found = LocalMemory.extract(latest.text)
+            if (found.isNotEmpty()) Store.userFacts = LocalMemory.merge(Store.userFacts, found)
+        }
+        return quick
+    }
+
+    private fun memoryCommand(text: String): Tier0.Result? {
+        val out = LocalMemory.command(text, Store.userFacts) ?: return null
+        val updated = out.updated
+        if (updated != null) Store.userFacts = updated
+        return Tier0.Result("Yaad", out.reply)
+    }
+
+    private fun isActionReply(m: Message): Boolean =
+        m.engine == "tool" || m.undoId != null || m.actions != null || m.pending != null
+
+    /**
+     * The history the offline model may see: every phone-action exchange is left out. A reply like "Torch off kar
+     * di." is not a conversation, and a 1.5B model that finds three of them in its prompt answers the next,
+     * unrelated question with the same line (this is what "Kal mujhe 8 baje uthna hai" -> "Torch off kar di." was).
+     */
+    private fun localHistory(history: List<Message>): List<Message> {
+        val out = ArrayList<Message>(history.size)
+        var i = 0
+        while (i < history.size) {
+            val m = history[i]
+            val next = if (i + 1 < history.size) history[i + 1] else null
+            if (m.role == Role.USER && next != null && next.role == Role.AI && isActionReply(next)) {
+                i += 2
+                continue
+            }
+            if (m.role == Role.AI && isActionReply(m)) {
+                i++
+                continue
+            }
+            out.add(m)
+            i++
+        }
+        return out
     }
 
     /** Stop button. Keeps whatever Gemini had streamed so far; a local reply cannot be partial. */
@@ -385,14 +438,14 @@ object ChatRunner {
             ConvKpi.inc("local_image_block")
             run.detail = "image: local model skipped"
             val how = if (Store.localScreenshotOcr) {
-                "On-device OCR ko is photo mein padhne layak text nahi mila. "
+                "Is photo mein na padhne layak text mila na koi pehchaani hui cheez. "
             } else {
-                "Photo ka text padhwana ho toh Voice and AI mein \"Qwen ke liye attached-image OCR\" on karo. "
+                "Photo analysis band hai: Voice and AI mein \"Qwen ke liye attached-image OCR\" on karo. "
             }
             return Message(
                 id = run.messageId, role = Role.AI, engine = "local",
-                text = "Ye photo offline Qwen nahi dekh sakta: ye sirf text padhta hai, isliye main andaza lagakar " +
-                    "jawab nahi dunga.\n\n" + how +
+                text = "Offline Qwen photo seedha nahi dekh sakta (photo se sirf text aur kuch cheezon ke naam nikalte " +
+                    "hain), isliye main andaza lagakar jawab nahi dunga.\n\n" + how +
                     "Photo samjhane ke liye Gemini chuno (internet chahiye) ya photo ka text yahan paste karo.",
                 note = "Qwen2.5 1.5B · text-only"
             )
@@ -400,6 +453,10 @@ object ChatRunner {
 
         val system = Prompts.systemLocal(run.viaVoice)
         val userText = Prompts.combineLatest(latest.text, payload.text)
+        // History without phone-action exchanges; for a Hinglish message two example exchanges go in front of it.
+        val chatHistory = localHistory(history)
+        val hinglish = HinglishGuide.userWritesHinglish(latest.text)
+        val shaped = if (hinglish) HinglishGuide.fewShot() + chatHistory else chatHistory
         // Tools only in the verified ChatML shape: the repair retry below needs real turn markers.
         val wantTools = kind == LocalTemplate.Kind.CHATML && latest.attachments.isEmpty() &&
             ActionHint.looksLikeAction(latest.text)
@@ -407,12 +464,14 @@ object ChatRunner {
             LocalTemplate.Built(
                 "",
                 ChatMl.build(
-                    ChatMl.withTools(system, Prompts.TOOL_RULES, ToolSpecs.qwenToolsBlock()),
-                    history, userText, budget
+                    ChatMl.withTools(
+                        system, Prompts.TOOL_RULES + "\n" + Prompts.LOCAL_TOOL_HINT, ToolSpecs.qwenToolsBlock()
+                    ),
+                    shaped, userText, budget
                 )
             )
         } else {
-            LocalTemplate.build(kind, system, history, userText, budget)
+            LocalTemplate.build(kind, system, shaped, userText, budget)
         }
         var reply = LocalLlm.generate(built.system, built.prompt, maxTokens)
         var tokens = reply.tokens
@@ -464,7 +523,7 @@ object ChatRunner {
             postProgress(run)
             val retryTokens = minOf(maxTokens, 200)
             val retryBuilt = LocalTemplate.build(
-                kind, Prompts.LOCAL_MINIMAL_SYSTEM, ReplyGuard.cleanHistory(history).takeLast(2), userText,
+                kind, Prompts.LOCAL_MINIMAL_SYSTEM, ReplyGuard.cleanHistory(chatHistory).takeLast(2), userText,
                 Prompts.budgetChars(Store.localContext, retryTokens)
             )
             reply = LocalLlm.generate(retryBuilt.system, retryBuilt.prompt, retryTokens)
@@ -486,13 +545,46 @@ object ChatRunner {
                 note = "Qwen2.5 1.5B · jawab reject ($why)"
             )
         }
+        // Hinglish in, English out: ask once more with "Ji, " already written for the model to continue from.
+        var langRetried = false
+        if (hinglish && !HinglishGuide.replyMatchesLanguage(latest.text, verdict.text)) {
+            ConvKpi.inc("local_lang_retry")
+            langRetried = true
+            run.label = "Hinglish mein dobara likh raha hoon"
+            postProgress(run)
+            val langTokens = minOf(maxTokens, 260)
+            val pre = HinglishGuide.prefillFor(kind)
+            val facts = LocalMemory.block(Store.userFacts)
+            val langBuilt = LocalTemplate.build(
+                kind,
+                HinglishGuide.RETRY_SYSTEM + (if (facts.isEmpty()) "" else "\n" + facts),
+                HinglishGuide.fewShot() + ReplyGuard.cleanHistory(chatHistory).takeLast(2),
+                userText,
+                Prompts.budgetChars(Store.localContext, langTokens)
+            )
+            val tail = if (pre.isEmpty()) "" else if (kind == LocalTemplate.Kind.PLAIN) " " + pre else pre
+            val second = LocalLlm.generate(langBuilt.system, langBuilt.prompt + tail, langTokens)
+            tokens += second.tokens
+            millis += second.millis
+            val secondShown = pre + LocalTemplate.finish(kind, second.text)
+            val secondVerdict = ReplyGuard.inspect(secondShown, latest.text, second.capped, smallTalk)
+            // keep the first answer unless the second one is clean AND really in Hinglish
+            if (secondVerdict.ok && HinglishGuide.replyMatchesLanguage(latest.text, second.text)) {
+                shown = secondShown
+                verdict = secondVerdict
+                reply = second
+            }
+            run.tokens = tokens
+            run.tps = reply.tokensPerSecond
+        }
         if (verdict.problem != null) {
             ConvKpi.inc("local_guard_trim")
             run.detail = "local reply trimmed: " + verdict.problem
         }
         val speed = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
         val secs = millis / 1000
-        val shape = if (retried) kind.key + " · 2. koshish" else kind.key
+        val shape = (if (retried) kind.key + " · 2. koshish" else kind.key) +
+            (if (langRetried) " · hinglish retry" else "")
         return Message(
             id = run.messageId, role = Role.AI, text = verdict.text, engine = "local",
             note = noteWith("Qwen2.5 1.5B · $speed tok/s · ${secs}s · $shape", payload.skipped)

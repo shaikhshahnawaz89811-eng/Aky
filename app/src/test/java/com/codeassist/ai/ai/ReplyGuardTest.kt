@@ -172,4 +172,15 @@ class ReplyGuardTest {
             "fixing it right now ok"
         assertFalse(ReplyGuard.needsImage(longQuestion, true, false))
     }
+
+    @Test fun runawayDigitsInsideACodeBlockAreRejectedSoTheAppCanRetry() {
+        val bad = "```python\n print(\"Hello, World! 2" + "0".repeat(60) + "\n```"
+        val r = ReplyGuard.inspect(bad, "Create python 2 line code", false)
+        assertFalse(r.ok)
+    }
+
+    @Test fun separatorLinesAreNotRunaways() {
+        val t = "Title\n" + "-".repeat(50) + "\nBody text that is long enough to be kept as a normal answer."
+        assertTrue(ReplyGuard.inspect(t, "show a table", false).ok)
+    }
 }

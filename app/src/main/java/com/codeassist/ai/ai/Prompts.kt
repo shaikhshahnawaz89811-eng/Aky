@@ -25,15 +25,24 @@ object Prompts {
 
     /**
      * System prompt for the on-device 1.5B model: short, plain English instructions (a small model follows these
-     * better than a long Hinglish text), an explicit Hinglish rule and an explicit "remember this chat" rule.
-     * A system prompt the user edited in Settings is used instead (see [systemLocal]).
+     * better than a long Hinglish text). The language rule is spelled out with an example; for a Hinglish message the
+     * prompt also carries two example exchanges (see [HinglishGuide.fewShot]). What the user told the app about
+     * themselves is added by [systemLocal]. A system prompt the user edited in Settings is used instead.
      */
     const val LOCAL_SYSTEM =
-        "You are CodeAssist AI, a friendly assistant inside an Android app. " +
-            "Reply in the same language and script the user writes. If the user writes Hinglish (Hindi in English " +
-            "letters), reply in simple Roman Hinglish. Keep answers short and clear; put code in Markdown code blocks. " +
-            "Remember what the user told you earlier in this chat (name, preferences) and use it when asked. " +
+        "You are CodeAssist AI, a friendly assistant inside an Android app, talking to an Indian user. " +
+            "LANGUAGE: if the user writes Hinglish (Hindi in English letters), you MUST answer in simple Roman Hinglish, " +
+            "for example \"Haan, main aapki madad kar sakta hoon.\" Never answer a Hinglish message in English. " +
+            "If the user writes English, answer in English. If the user writes Devanagari, answer in Devanagari. " +
+            "Keep answers short and clear; put code in Markdown code blocks. " +
+            "Use the earlier messages of this chat and the facts you know about the user when they matter. " +
             "Never invent facts: if you do not know, say so. Stop when the answer is complete."
+
+    /** Added to the tool rules for the offline model only: three worked examples, because a 1.5B model copies them well. */
+    const val LOCAL_TOOL_HINT =
+        "Examples: \"kal subah 6 baje utha dena\" -> alarm_set {hour 6, minute 0, tomorrow true}. " +
+            "\"10 minute baad yaad dilana\" -> timer_set {seconds 600}. " +
+            "\"torch jalao\" -> torch_set {on true}. \"battery kitni hai\" -> battery_level."
 
     /** Used for the one retry after a rejected reply: as little text as possible for the model to trip over. */
     const val LOCAL_MINIMAL_SYSTEM =
@@ -55,6 +64,8 @@ object Prompts {
 
     fun systemLocal(viaVoice: Boolean): String {
         val sb = StringBuilder(if (Store.systemPromptIsCustom) Store.systemPrompt.trim() else LOCAL_SYSTEM)
+        val facts = LocalMemory.block(Store.userFacts)
+        if (facts.isNotEmpty()) sb.append("\n").append(facts)
         when (Store.replyLength) {
             "Short" -> sb.append("\nKeep every answer very short.")
             "Long" -> sb.append("\nGive detailed, step-by-step answers when that helps.")

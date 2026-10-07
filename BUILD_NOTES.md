@@ -499,3 +499,73 @@ Hinglish text: junk and loops are caught, normal text is left untouched. Send th
   memory (Memory Manager, "yaad rakhna", never-store list, audit Sec 9.5) is part 2.
 - **Old saved temperature is ignored**: phones that had the previous setting (default 0.7) start at 0.3 after the update.
 
+
+# Offline fix, part 2 (make Qwen work like Gemini, offline-style) — honest status
+
+## What Gemini does that Qwen did not (read from the code and the chat log)
+
+| Gemini path | Offline path before this part |
+| --- | --- |
+| Gets all 8 phone tools on every plain message and picks one from any phrasing | Tools only when `ActionHint` saw an action word, and "bhaje", "uthna", "yaad dilana" were not action words |
+| Sees up to 24 turns / 24k characters of the chat | About 9k characters, and phone-action replies ("Torch off kar di.") were counted as conversation |
+| Gets the photo itself (inline JPEG) | Photo refused unless an OCR setting was on; even then only text |
+| Follows "answer in Roman Hinglish" from one line | A 1.5B model understands Hinglish but answers in English |
+| Streams long answers without runaways | One digit repeated 80 times inside a code block was shown as is |
+
+The chat log shows each of these: "Kal mujhe 8 bhaje uthna hai" -> "Torch off kar di." (no alarm word, and the prompt was full of
+torch replies the model copied), "Off" -> English rambling (a bare "off" was not tied to the torch), "Torch o" -> torch off
+(a guess), "Create python 2 line code" -> `Hello, World! 2000000...` (runaway not caught).
+
+## What changed (files)
+
+- `HinglishGuide.kt` (new): detects a Roman-Hinglish message; two example exchanges are put in front of the history for such
+  a message; a finished English-only answer to a Hinglish message gets ONE retry with a blunt Hinglish system prompt and
+  "Ji, " already written for the model to continue (ChatML and plain shapes; not the library shape). The first answer is kept if
+  the retry is not clean and really Hinglish. KPI: `local_lang_retry`.
+- `LocalMemory.kt` (new) + `Store.userFacts`: a list of at most 12 short facts, on the phone. Filled only from what the user
+  states ("mera naam Rahul hai", "main Pune mein rehta hoon", "mujhe cricket pasand hai") or says to remember ("yaad rakho ki ...").
+  "tum mere baare mein kya jaante ho" lists them, "bhool jao" clears them. These commands never reach the model. The facts are
+  added to the offline system prompt only (Gemini is untouched).
+- `ChatRunner.localHistory`: phone-action exchanges are removed from what the offline model sees.
+- `Tier0`: "8 bhaje" is read as "8 baje"; "kal 8 baje uthna hai" / "utha dena" / "wake me" set an alarm without the word
+  alarm (not when the sentence is a statement: "padta", "tha", "kab" ...); "10 minute baad yaad dilana" starts a timer; "torch" with no
+  direction asks instead of guessing; a bare "off" / "band karo" / "on" right after a torch reply controls the torch.
+- `ActionHint`: more wake / reminder words; `Prompts.LOCAL_TOOL_HINT`: three worked examples for the tool prompt.
+- `AttachmentText.analyzeImage`: for the offline model a photo becomes plain text: ML Kit OCR text plus up to 6 object/scene
+  labels (bundled ML Kit image labeling, new dependency `image-labeling:17.0.9`), with a closing note that the model cannot see the
+  photo and must not guess who a person is. `Store.localScreenshotOcr` now defaults to ON.
+- `ReplyGuard`: a character repeated 30+ times is cut; if that leaves an open code block the reply is rejected so the existing retry runs.
+- `Prompts.LOCAL_SYSTEM`: explicit language rule with an example, "use earlier messages and known facts".
+- Version 1.9 (code 10).
+
+## Verification status — read this first
+
+- **Not compiled and not run.** The machine that produced this zip has no Kotlin compiler and no Android SDK. The regular
+  expressions (memory, Hinglish markers, wake phrase, runaway run) were run in plain Java (same regex engine) with the example
+  sentences from the chat log and behaved as described. Everything else is unbuilt Kotlin: expect to fix a compile error or two.
+- New unit tests (`LocalMemoryTest`, `HinglishGuideTest`, additions to `ActionHintTest` and `ReplyGuardTest`) are written but were
+  not run. `Tier0` and `AttachmentText` use Android classes and have no JVM test.
+- The ML Kit image-labeling artifact version was typed from memory; if Gradle cannot resolve `17.0.9`, use the newest 17.x.
+
+## Deliberate gaps and limits
+
+- **No real vision.** The free llama-android API has no image input. Labels are rough guesses ("Dog, Grass, Plant"), OCR reads
+  Latin text only. A face is never identified. Real offline vision needs a vision GGUF (for example Qwen2-VL or SmolVLM with its
+  projector file) and a library with vision support; that is a separate, larger step.
+- **Hinglish quality is bounded by a 1.5B model.** The examples and the retry fix the language (English answer to a Hinglish
+  question), not wrong facts or clumsy grammar. The planned Qwen2.5-3B picker is still the real quality step.
+- **Memory is explicit only.** It does not summarise old chats and it does not learn from hints. Facts are plain text in app
+  preferences; the memory commands also appear in the activity log as "Yaad".
+- **Voice**: the TTS picks `en-IN` for Roman text and `hi-IN` for Devanagari; Roman Hinglish is therefore read by the English
+  voice. That part was not changed.
+- **A reply that needs a retry costs time**: a language retry is one more generation (about 10-40 s on a slow phone).
+- "kal 8 baje" said before 8 am still gets the Clock-app rule from part B (the app cannot set a tomorrow-only alarm); unchanged.
+
+## How to check it on the phone (about 10 minutes)
+
+1. Chat: "kaise ho?" and "mujhe chai banana sikhao" -> answers in Roman Hinglish (caption may say "hinglish retry").
+2. "mera naam Rahul hai", new chat, "tum mere baare mein kya jaante ho" -> lists the name. "bhool jao" -> cleared.
+3. "torch on", then "off" -> torch turns off. "torch o" -> asks on or off.
+4. "kal subah 6 baje utha dena" -> alarm path (not a torch reply). "10 minute baad yaad dilana" -> 10 minute timer.
+5. Attach a photo of a printed page and ask "isme kya likha hai" -> text answer; a photo of a dog -> "kutta/dog" type answer, no names of people.
+6. "create 2 line python code" -> a short code block, no runaway digits.

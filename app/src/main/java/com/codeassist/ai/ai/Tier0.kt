@@ -79,6 +79,8 @@ object Tier0 {
         s = sb.toString()
         s = s.replace(Regex("[^\\p{L}\\p{M}\\p{N}:.+ ]"), " ")
         s = s.replace(Regex("\\s+"), " ").trim()
+        // "8 bhaje", "8 baaje", "8 bajey" are all "8 baje"
+        s = s.replace(Regex("(?<![\\p{L}\\p{M}])(bhaje|baaje|bajey|bajay|bhaaje)(?![\\p{L}\\p{M}])"), "baje")
         return s
     }
 
@@ -146,8 +148,33 @@ object Tier0 {
         if (words.none { it == "torch" || it == "flashlight" || it == "flash" }) return null
         val on = words.any { it in onWords }
         val off = words.any { it in offWords }
-        if (on == off) return null
+        if (on == off) {
+            // "torch" or "torch o": clearly a torch request with no usable direction. Ask instead of guessing.
+            // A real question ("torch kya hota hai") still goes to the brain.
+            val rest = words.filter { it != "torch" && it != "flashlight" && it != "flash" }
+            if (rest.isEmpty() || (rest.size == 1 && rest[0].length <= 2)) {
+                return Result("Torch", "Torch on karun ya off? Bolo \"torch on\" ya \"torch off\".", ok = false)
+            }
+            return null
+        }
         return runTorch(ctx, on)
+    }
+
+    private val onFollow = setOf("on", "on karo", "on kar do", "chalu", "chalu karo", "chalu kar do", "jalao", "jala do")
+    private val offFollow = setOf("off", "off karo", "off kar do", "band", "band karo", "band kar do", "bujhao", "bujha do")
+
+    /**
+     * A bare "off" / "band karo" right after a torch reply means the torch. [lastTitle] is the title of the previous
+     * phone-action reply (null when the previous reply was not one). Anything else returns null.
+     */
+    fun followUp(ctx: Context, raw: String, lastTitle: String?): Result? {
+        if (lastTitle != "Torch") return null
+        val t = normalize(raw)
+        return when (t) {
+            in onFollow -> runTorch(ctx, true)
+            in offFollow -> runTorch(ctx, false)
+            else -> null
+        }
     }
 
     fun runTorch(ctx: Context, on: Boolean): Result {
@@ -186,8 +213,11 @@ object Tier0 {
         "(\\d{1,4}) ?(seconds?|secs?|minutes?|mins?|mint|ghanta|ghante|ghanton|hours?|hrs?)" + E
     )
 
+    private val remindCue = Regex("yaad dila|remind|jaga|utha|bata dena|batana")
+
     private fun timer(ctx: Context, t: String): Result? {
-        if (!t.contains("timer")) return null
+        val asked = t.contains("timer") || (t.contains("baad") && remindCue.containsMatchIn(t))
+        if (!asked) return null
         val m = durationRegex.find(t) ?: return null
         val n = m.groupValues[1].toIntOrNull() ?: return null
         val unit = m.groupValues[2]
@@ -280,8 +310,19 @@ object Tier0 {
         return ((target.timeInMillis - now.timeInMillis) / 60000L).toInt()
     }
 
+    private val wakeWords = setOf("uthna", "uthne", "uthana", "uthao", "utha", "jagana", "jagao", "jaga", "wake")
+    private val notARequest = setOf(
+        "padta", "padti", "padega", "padegi", "tha", "thi", "hota", "hoti", "kyun", "kyu", "kab", "kya", "kaise", "kaun"
+    )
+
+    /** "kal 8 baje uthna hai", "6 baje utha dena", "wake me at 7": a wish to be woken, said without the word alarm. */
+    private fun wantsWake(t: String): Boolean {
+        val words = t.split(' ')
+        return words.any { it in wakeWords } && words.none { it in notARequest }
+    }
+
     private fun alarm(ctx: Context, t: String): Result? {
-        if (!t.contains("alarm")) return null
+        if (!t.contains("alarm") && !wantsWake(t)) return null
         val clock = parseClock(t) ?: return null
         val now = Calendar.getInstance()
         var h = clock.hour
