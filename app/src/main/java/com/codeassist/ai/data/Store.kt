@@ -145,6 +145,56 @@ object Store {
         get() = prefs.getString("tts_voice", "") ?: ""
         set(v) = prefs.edit().putString("tts_voice", v).apply()
 
+    // ---------- ElevenLabs voice (audit PDF Sec 9.7, Phase 1 "streaming ElevenLabs") ----------
+    /** ElevenLabs API key typed by the user, stored encrypted with the Android Keystore (never in the build: audit Gap G4). */
+    var elevenKey: String?
+        get() = prefs.getString("eleven_key_enc", null)?.let { com.codeassist.ai.ai.SecureStore.decrypt(it) }
+        set(v) {
+            val e = prefs.edit()
+            if (v.isNullOrBlank()) e.remove("eleven_key_enc")
+            else e.putString("eleven_key_enc", com.codeassist.ai.ai.SecureStore.encrypt(v.trim()))
+            e.apply()
+        }
+
+    /** "none" | "saved" | "verified" | "invalid" */
+    var elevenKeyStatus: String
+        get() = prefs.getString("eleven_key_status", "none") ?: "none"
+        set(v) = prefs.edit().putString("eleven_key_status", v).apply()
+
+    /** "android" = phone TTS voice, "eleven" = ElevenLabs (falls back to the phone voice on any problem). */
+    var ttsEngine: String
+        get() = prefs.getString("tts_engine", "android") ?: "android"
+        set(v) = prefs.edit().putString("tts_engine", v).apply()
+
+    var elevenVoiceId: String
+        get() = prefs.getString("eleven_voice_id", null)?.takeIf { it.isNotBlank() }
+            ?: com.codeassist.ai.ai.ElevenLabsClient.DEFAULT_VOICE
+        set(v) = prefs.edit().putString("eleven_voice_id", v).apply()
+
+    var elevenModel: String
+        get() = prefs.getString("eleven_model", null)?.takeIf { it.isNotBlank() }
+            ?: com.codeassist.ai.ai.ElevenLabsClient.DEFAULT_MODEL
+        set(v) = prefs.edit().putString("eleven_model", v).apply()
+
+    /** Name of the chosen ElevenLabs voice (shown in settings). */
+    var elevenVoiceName: String
+        get() = prefs.getString("eleven_voice_name", null)?.takeIf { it.isNotBlank() } ?: "George"
+        set(v) = prefs.edit().putString("eleven_voice_name", v).apply()
+
+    /** Which kind of voice the picker shows: "any" | "female" | "male". */
+    var elevenGender: String
+        get() = prefs.getString("eleven_gender", "any") ?: "any"
+        set(v) = prefs.edit().putString("eleven_gender", v).apply()
+
+    /** Voices returned by the last successful list call (see ElevenLabsClient.encodeVoices). */
+    var elevenVoices: List<com.codeassist.ai.ai.ElevenLabsClient.Voice>
+        get() = com.codeassist.ai.ai.ElevenLabsClient.decodeVoices(prefs.getString("eleven_voices", "") ?: "")
+        set(v) = prefs.edit().putString("eleven_voices", com.codeassist.ai.ai.ElevenLabsClient.encodeVoices(v)).apply()
+
+    /** True when replies should be spoken with ElevenLabs: engine chosen, key present and not known to be rejected. */
+    fun elevenActive(): Boolean =
+        ttsEngine == "eleven" && elevenKeyStatus != "invalid" && !elevenKey.isNullOrBlank()
+
     // ---------- Conversation (audit PDF Phase 2) ----------
     /** Follow-up window after a spoken reply: "off" | "normal" (about 8 s) | "long" (about 20 s). */
     var followUp: String

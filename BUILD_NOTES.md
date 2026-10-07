@@ -198,3 +198,90 @@ failure found.
    as `AssistantService.heartbeat` and `ComposerController.timerTick`, which were already written that way).
 A scan of all Kotlin files found no other lambda that names its own val, and no smart-cast on a mutable property.
 Each run only shows the errors the compiler reaches before it stops, so more may appear; unit tests have not compiled yet.
+
+
+---
+
+# ElevenLabs voice, part 1 of 2 (engine + API key + fallback) — honest status
+
+**Where it is in the audit PDF:** Phase 1 (Sec 13) lists "streaming ElevenLabs"; Sec 15.5 week-1 task 5 is "TtsEngine
+(ElevenLabs streaming, backend token) + AudioTrack playback"; Gap G4 (BLOCKER) says the key must never be in the APK; Sec 9.7
+has the ElevenLabs table (Flash v2.5, HTTP streaming, `pcm_24000` into AudioTrack, previous_text / next_text, phone-TTS fallback).
+**Status before this part:** not present in the zip (no ElevenLabs code at all; speech out was platform TextToSpeech only).
+
+Same situation as before: written and statically checked (brackets balance in every new / edited file, imports and `R.*`
+references checked by hand) in a sandbox with **no Android SDK, no Kotlin compiler and no network**, so it has **never been
+compiled or run**. Send the CI compiler output if anything fails.
+
+| Part | Status |
+|---|---|
+| `ai/ElevenLabsClient` (HTTPS POST `/v1/text-to-speech/{voice}/stream?output_format=pcm_24000`, `xi-api-key` header, friendly errors, key probe) | Written, never run against the live API |
+| `voice/ElevenPlayer` (fetch thread -> bounded queue -> AudioTrack stream thread, next chunk prefetched, stop = pause + flush, duck / unduck) | Written, needs device test |
+| `Store`: `elevenKey` (Keystore-encrypted), `elevenKeyStatus`, `ttsEngine`, `elevenVoiceId`, `elevenModel` | Written |
+| `VoiceController`: ElevenLabs path + fallback to phone voice, real volume duck on barge-in candidate | Written, needs device test |
+| Settings > Voice and AI > "ElevenLabs voice" card: Add / Change key, Test key, engine ON / OFF, Remove key | Written, needs device test |
+
+## How the key is handled (differs from the PDF's "backend proxy", on purpose)
+
+The PDF wants a backend proxy or short-lived token so no key can be extracted from the APK. This app has no backend, so the
+key is **typed by the user and stored encrypted in the Android Keystore** (same as the Gemini key). Nothing is in the build.
+That is fine for your own phone / a sideloaded app. For a public release, add a small backend that hands out short-lived
+tokens and remove the key card.
+
+## Behaviour
+
+- After a key passes **Test key** (one real 2-character synthesis), replies switch to ElevenLabs once; Options turns it off.
+- Any failure (no internet, quota, server error) speaks the **rest of the reply with the phone voice** and shows one line with
+  the reason. A network / quota failure pauses ElevenLabs for 60 s; a rejected key marks it **Invalid** and stops using it.
+- Chunks are about 220 characters (sentence-sized) so the first audio starts early. `Speaking speed` maps to the API
+  `speed` setting (clamped 0.7 to 1.2).
+- Volume duck: when the barge-in detector sees a candidate the ElevenLabs voice drops to 30 %; if the gate rejects it the
+  volume comes back. (Platform TTS still cannot duck.)
+
+## Known limits of part 1 (part 2 handles the first three)
+
+- **Voice is fixed** to a default premade voice id (`ElevenLabsClient.DEFAULT_VOICE`). No male / female choice, no voice
+  list, no preview yet.
+- The existing "Voice" row (phone voices) is not engine-aware yet.
+- **Filler phrases ("ek second") still use the phone voice** (PhraseCache runs on platform TTS), so they will not match.
+- `spoken_up_to` is chunk-level (the chunk that was playing), not word-level: the character timestamps endpoint is not used yet.
+- The test key probe costs a couple of credits; a restricted key without text-to-speech permission shows as Invalid / 403.
+- The "Get a key" button opens `elevenlabs.io/app/settings/api-keys`; that page address was not verified here.
+
+
+---
+
+# ElevenLabs voice, part 2 of 2 (male / female, voice picker, matching fillers) — honest status
+
+Same situation as before: written and statically checked (brackets balance in every new / edited file, signatures and imports
+checked by hand, JVM tests hand-walked) in a sandbox with **no Android SDK, no Kotlin compiler and no network**, so it has
+**never been compiled or run**. Send the CI compiler output if anything fails.
+
+| Part | Status |
+|---|---|
+| Settings > Voice: **Voice** row is engine-aware (ElevenLabs voice picker when ElevenLabs is on, phone voices otherwise) | Written, needs device test |
+| Settings > Voice: new **Voice type (ElevenLabs)** row: Any / Female / Male | Written, needs device test |
+| Voice picker: shows only voices of the chosen type, one tap saves + plays a spoken sample, "Refresh list" button | Written, needs device test |
+| Choosing Female / Male switches the current voice to the first voice of that kind if it is the other kind, then plays a sample | Written, needs device test |
+| `ElevenLabsClient.listVoices` (GET `/v2/voices`, up to 3 pages of 100) + `parseVoices` / `encodeVoices` / `decodeVoices` | Written, never run against the live API |
+| `PhraseCache.prepareEleven` + `WavHeader`: "ek second" fillers are now synthesized in the chosen ElevenLabs voice | Written, needs device test |
+| ElevenLabs card: shows chosen voice; Options has Voice and Voice type | Written, needs device test |
+| `WavHeaderTest`, `ElevenVoicesTest` (JVM) | Written, not run |
+
+## How male / female works
+
+ElevenLabs tags each voice with a `gender` label. The picker filters on it. A voice with no label (or a non-binary label) shows
+as "Other" and is only listed under Any. If the account's list cannot be loaded (a restricted key without the voices permission,
+or no internet) the screen falls back to two basic voices (Rachel female, George male) and says why.
+Library voices that are not in the account may not be usable on a free plan; only voices the list returns are offered.
+
+## Known limits of part 2
+
+- **Phone voices have no male / female choice.** Android does not report a reliable gender for its TTS voices, so Voice type only
+  applies to ElevenLabs. The row title says so.
+- **Hindi quality depends on the voice.** Flash v2.5 speaks Hindi, but some voices have a strong accent on Roman Hindi. Try a few.
+- **Fillers cost a few hundred characters of credit** once per voice / speed / model (they are cached as files). If ElevenLabs is
+  unreachable the filler cache simply stays empty and no filler is played.
+- The Gemini persona is **not** told the voice gender, so Hindi verb forms in replies (karta / karti) stay as the model chooses.
+  Making them follow the voice type is the persona setting from the audit (Phase 4).
+- `/v2/voices` and its `has_more` / `next_page_token` fields were taken from the ElevenLabs docs; not tested against a real account.

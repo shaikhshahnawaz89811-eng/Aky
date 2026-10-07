@@ -33,6 +33,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import com.codeassist.ai.R
 import com.codeassist.ai.ai.ConvKpi
+import com.codeassist.ai.ai.ElevenLabsClient
 import com.codeassist.ai.ai.GeminiClient
 import com.codeassist.ai.ai.LocalPhi
 import com.codeassist.ai.ai.Modules
@@ -93,6 +94,7 @@ class VoiceAiFragment : Fragment() {
         const val PURPLE = 0xFFB49CFF.toInt()
         const val RED = 0xFFFF7B72.toInt()
         const val KEY_URL = "https://aistudio.google.com/apikey"
+        const val ELEVEN_KEY_URL = "https://elevenlabs.io/app/settings/api-keys"
     }
 
     private lateinit var container: LinearLayout
@@ -101,6 +103,11 @@ class VoiceAiFragment : Fragment() {
     private var voice: VoiceController? = null
     private var phiCard: Card? = null
     private var geminiCard: Card? = null
+    private var elevenCard: Card? = null
+    private var testingEleven = false
+    private var voiceValue: TextView? = null
+    private var voiceTypeValue: TextView? = null
+    private var elevenMessage: String? = null
     private var segLocal: TextView? = null
     private var segGemini: TextView? = null
     private var brainHint: TextView? = null
@@ -152,6 +159,9 @@ class VoiceAiFragment : Fragment() {
         voice = null
         phiCard = null
         geminiCard = null
+        elevenCard = null
+        voiceValue = null
+        voiceTypeValue = null
         wakeSwitch = null
         segLocal = null
         segGemini = null
@@ -279,7 +289,14 @@ class VoiceAiFragment : Fragment() {
 
         section("Voice")
         card {
-            valueRow(R.drawable.ic_sound, "Voice", voiceLabel()) { _, tv -> chooseVoice(tv) }
+            voiceValue = valueRow(R.drawable.ic_sound, "Voice", voiceLabel()) { _, tv ->
+                if (Store.elevenActive()) chooseElevenVoice() else chooseVoice(tv)
+            }
+            voiceTypeValue = valueRow(R.drawable.ic_sound, "Voice type (ElevenLabs)", voiceTypeLabel()) { anchor, _ ->
+                popup(anchor, voiceTypeOptions.map { it.first }, voiceTypeLabel()) { picked ->
+                    setVoiceType(voiceTypeOptions.first { it.first == picked }.second)
+                }
+            }
             valueRow(R.drawable.ic_tune, "Speaking speed", speedLabel()) { anchor, tv ->
                 popup(anchor, speedOptions.map { it.first }, speedLabel()) { picked ->
                     Store.ttsSpeed = speedOptions.first { it.first == picked }.second
@@ -289,6 +306,7 @@ class VoiceAiFragment : Fragment() {
             linkRow(R.drawable.ic_sound, "Test voice") { testVoice() }
             linkRow(R.drawable.ic_settings, "System voice settings") { openTtsSettings() }
         }
+        elevenCard = newCard()
 
         section("Privacy")
         card {
@@ -296,6 +314,8 @@ class VoiceAiFragment : Fragment() {
                 "Phi-4 mini: aapka text sirf is phone par process hota hai.\n\n" +
                     "Gemini: aapka text (aur bheji gayi image / text file) Google ko jaata hai. " +
                     "API key sirf is phone par Android Keystore se encrypted rehti hai.\n\n" +
+                    "ElevenLabs voice (ON ho toh): jo reply bolna hai wo text ElevenLabs ko jaata hai. Key sirf is phone par encrypted rehti hai, " +
+                    "app mein build ke saath nahi aati.\n\n" +
                     "Voice: speech recognition Android / Google service karti hai. Offline pack ON ho toh " +
                     "audio phone par hi rehti hai. App audio kabhi save nahi karta."
             )
@@ -307,6 +327,7 @@ class VoiceAiFragment : Fragment() {
         renderBrain()
         renderPhi()
         renderGemini()
+        renderEleven()
     }
 
     // ---------- brain selector ----------
@@ -707,6 +728,202 @@ class VoiceAiFragment : Fragment() {
             .show()
     }
 
+    // ---------- ElevenLabs card ----------
+
+    private fun elevenModelLabel(): String = when (Store.elevenModel) {
+        "eleven_flash_v2_5" -> "Flash v2.5"
+        "eleven_multilingual_v2" -> "Multilingual v2"
+        else -> Store.elevenModel
+    }
+
+    private fun renderEleven() {
+        val c = elevenCard ?: return
+        if (view == null) return
+        val key = Store.elevenKey
+        val hasKey = !key.isNullOrBlank()
+        c.icon.setImageResource(R.drawable.ic_sound)
+        c.title.text = "ElevenLabs voice"
+        c.sub.text = "Natural awaaz · cloud · internet chahiye"
+
+        when {
+            testingEleven -> setBadge(c.badge, "Testing", PURPLE)
+            !hasKey -> setBadge(c.badge, "No key", GREY)
+            Store.elevenKeyStatus == "invalid" -> setBadge(c.badge, "Invalid", RED)
+            Store.elevenActive() -> setBadge(c.badge, "In use", GREEN)
+            Store.elevenKeyStatus == "verified" -> setBadge(c.badge, "Verified", BLUE)
+            else -> setBadge(c.badge, "Key saved", BLUE)
+        }
+
+        if (hasKey && key != null) {
+            c.detail.visibility = View.VISIBLE
+            c.detail.text = "••••••••" + key.takeLast(4) + "\nVoice: " + Store.elevenVoiceName + " · Model: " + elevenModelLabel() +
+                "\nAb replies bolega: " + (if (Store.elevenActive()) "ElevenLabs" else "Phone ki awaaz")
+        } else {
+            c.detail.visibility = View.GONE
+        }
+        c.progressBox.visibility = View.GONE
+
+        val msg = elevenMessage
+        if (msg.isNullOrBlank()) {
+            c.message.visibility = View.GONE
+        } else {
+            c.message.visibility = View.VISIBLE
+            c.message.text = msg
+            c.message.setTextColor(if (Store.elevenKeyStatus == "invalid") RED else GREY)
+        }
+
+        val specs: List<Btn> = if (!hasKey) {
+            listOf(
+                Btn("Add API key", PRIMARY) { showElevenKeyDialog() },
+                Btn("Get a key", GHOST) { openUrl(ELEVEN_KEY_URL) }
+            )
+        } else {
+            listOf(
+                Btn(if (testingEleven) "Testing…" else "Test key", PRIMARY, enabled = !testingEleven, dim = testingEleven) { testElevenKey() },
+                Btn("Change key", GHOST) { showElevenKeyDialog() },
+                Btn("Options", GHOST) { showElevenOptions() }
+            )
+        }
+        setButtons(c.buttons, specs)
+    }
+
+    private fun showElevenKeyDialog() {
+        val ctx = requireContext()
+        val input = EditText(ctx).apply {
+            hint = "ElevenLabs API key"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setTextColor(0xFFE8EEF5.toInt())
+            setHintTextColor(0xFF5D6B7C.toInt())
+        }
+        val holder = FrameLayout(ctx).apply {
+            setPadding(dp(22), dp(10), dp(22), 0)
+            addView(input)
+        }
+        val dialog = AlertDialog.Builder(ctx)
+            .setTitle("ElevenLabs API key")
+            .setMessage(
+                "Key sirf is phone par encrypted save hogi, app ke saath kahin nahi jaati. " +
+                    "Key ko text-to-speech ki permission honi chahiye. Save ke baad ek chhota test chalega (2 characters ka credit)."
+            )
+            .setView(holder)
+            .setPositiveButton("Save and test", null)
+            .setNeutralButton("Paste", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(DialogInterface.BUTTON_NEUTRAL).setOnClickListener {
+                val clip = (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
+                val pasted = clip?.getItemAt(0)?.coerceToText(ctx)?.toString()?.trim().orEmpty()
+                if (pasted.isNotEmpty()) input.setText(pasted) else toast("Clipboard khaali hai.")
+            }
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+                val key = input.text.toString().trim()
+                if (key.length < 20 || key.contains(' ')) {
+                    toast("Ye API key jaisi nahi lag rahi. Poori key paste karo.")
+                    return@setOnClickListener
+                }
+                try {
+                    Store.elevenKey = key
+                } catch (e: Exception) {
+                    toast("Key save nahi ho payi: " + (e.message ?: "keystore error"))
+                    return@setOnClickListener
+                }
+                Store.elevenKeyStatus = "saved"
+                elevenMessage = null
+                dialog.dismiss()
+                renderEleven()
+                testElevenKey()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun testElevenKey() {
+        val key = Store.elevenKey
+        if (key.isNullOrBlank()) {
+            toast("Pehle API key daalo.")
+            return
+        }
+        if (testingEleven) return
+        val scope = uiScope ?: return
+        testingEleven = true
+        elevenMessage = "Key check ho rahi hai…"
+        renderEleven()
+        val voiceId = Store.elevenVoiceId
+        val model = Store.elevenModel
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { ElevenLabsClient.probe(key, voiceId, model) }
+                Store.elevenKeyStatus = "verified"
+                if (Store.ttsEngine != "eleven") {
+                    Store.ttsEngine = "eleven"
+                    elevenMessage = "Key sahi hai. Ab replies ElevenLabs ki awaaz mein bolenge. Band karna ho toh Options."
+                } else {
+                    elevenMessage = "Key sahi hai."
+                }
+            } catch (e: ElevenLabsClient.ApiError) {
+                Store.elevenKeyStatus = if (ElevenLabsClient.isAuthFailure(e)) "invalid" else "saved"
+                elevenMessage = e.message
+            } catch (e: UnknownHostException) {
+                elevenMessage = "Internet nahi mil raha. Connection check karke dobara Test key dabao."
+            } catch (e: Exception) {
+                elevenMessage = "Test fail hua: " + (e.message ?: e.javaClass.simpleName)
+            }
+            testingEleven = false
+            if (view != null) renderEleven()
+        }
+    }
+
+    private fun showElevenOptions() {
+        val engineOn = Store.ttsEngine == "eleven"
+        val labels = arrayOf(
+            "ElevenLabs awaaz · " + (if (engineOn) "ON" else "OFF"),
+            "Voice · " + Store.elevenVoiceName,
+            "Voice type · " + voiceTypeLabel(),
+            "Remove key"
+        )
+        AlertDialog.Builder(requireContext())
+            .setTitle("ElevenLabs options")
+            .setItems(labels) { _, which ->
+                when (which) {
+                    0 -> {
+                        Store.ttsEngine = if (engineOn) "android" else "eleven"
+                        elevenMessage = null
+                        renderEleven()
+                    }
+                    1 -> chooseElevenVoice()
+                    2 -> {
+                        val anchor = elevenCard?.root
+                        if (anchor != null) {
+                            popup(anchor, voiceTypeOptions.map { it.first }, voiceTypeLabel()) { picked ->
+                                setVoiceType(voiceTypeOptions.first { it.first == picked }.second)
+                            }
+                        }
+                    }
+                    3 -> confirmRemoveElevenKey()
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun confirmRemoveElevenKey() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("ElevenLabs key hata dein?")
+            .setMessage("Key is phone se delete ho jayegi aur replies phone ki awaaz mein bolenge.")
+            .setPositiveButton("Remove") { _, _ ->
+                Store.elevenKey = null
+                Store.elevenKeyStatus = "none"
+                Store.ttsEngine = "android"
+                elevenMessage = null
+                renderEleven()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     // ---------- Phi options ----------
 
     private fun showPhiOptions() {
@@ -832,7 +1049,137 @@ class VoiceAiFragment : Fragment() {
     private fun speedLabel(): String =
         speedOptions.minByOrNull { kotlin.math.abs(it.second - Store.ttsSpeed) }?.first ?: speedOptions[1].first
 
-    private fun voiceLabel(): String = if (Store.ttsVoice.isBlank()) "Auto" else Store.ttsVoice.take(22)
+    private fun voiceLabel(): String = when {
+        Store.elevenActive() -> "ElevenLabs · " + Store.elevenVoiceName.take(18)
+        Store.ttsVoice.isBlank() -> "Auto"
+        else -> Store.ttsVoice.take(22)
+    }
+
+    private val voiceTypeOptions = listOf("Any" to "any", "Female" to "female", "Male" to "male")
+
+    private fun voiceTypeLabel(): String =
+        voiceTypeOptions.firstOrNull { it.second == Store.elevenGender }?.first ?: "Any"
+
+    private fun refreshVoiceRows() {
+        voiceValue?.text = voiceLabel()
+        voiceTypeValue?.text = voiceTypeLabel()
+        renderEleven()
+    }
+
+    // ---------- ElevenLabs voices: male / female + picker (part 2) ----------
+
+    /**
+     * Gives the voice list through [done] on the main thread. Uses the saved list unless [force]; asks ElevenLabs
+     * otherwise. If the list cannot be loaded (key without voices permission, no internet) the two basic voices are
+     * returned together with a short reason so the screen still works.
+     */
+    private fun loadElevenVoices(force: Boolean, done: (List<ElevenLabsClient.Voice>, String?) -> Unit) {
+        val saved = Store.elevenVoices
+        if (!force && saved.isNotEmpty()) {
+            done(saved, null)
+            return
+        }
+        val key = Store.elevenKey
+        val scope = uiScope
+        if (key.isNullOrBlank() || scope == null) {
+            done(ElevenLabsClient.FALLBACK_VOICES, "Pehle ElevenLabs key daalo.")
+            return
+        }
+        scope.launch {
+            var reason: String? = null
+            val list: List<ElevenLabsClient.Voice> = try {
+                val loaded = withContext(Dispatchers.IO) { ElevenLabsClient.listVoices(key) }
+                if (loaded.isEmpty()) {
+                    reason = "Account mein koi voice nahi mili."
+                    ElevenLabsClient.FALLBACK_VOICES
+                } else {
+                    Store.elevenVoices = loaded
+                    loaded
+                }
+            } catch (e: ElevenLabsClient.ApiError) {
+                reason = if (e.http == 401 || e.http == 403) "Is key se voice list nahi khul rahi (voices permission chahiye)." else e.message
+                ElevenLabsClient.FALLBACK_VOICES
+            } catch (e: UnknownHostException) {
+                reason = "Internet nahi mil raha."
+                ElevenLabsClient.FALLBACK_VOICES
+            } catch (e: Exception) {
+                reason = "Voice list nahi aayi: " + (e.message ?: e.javaClass.simpleName)
+                ElevenLabsClient.FALLBACK_VOICES
+            }
+            if (view != null) done(list, reason)
+        }
+    }
+
+    private fun chooseElevenVoice() {
+        if (Store.elevenKey.isNullOrBlank()) {
+            toast("Pehle ElevenLabs key daalo.")
+            return
+        }
+        toast("Voices la raha hoon…")
+        loadElevenVoices(false) { list, reason ->
+            if (reason != null) toast(reason + " Basic voices dikha raha hoon.")
+            val g = Store.elevenGender
+            val shown = list.filter { g == "any" || it.gender == g }
+            if (shown.isEmpty()) {
+                toast("Is type ki koi voice nahi mili. Voice type ko Any karke dekho.")
+                return@loadElevenVoices
+            }
+            val labels = shown.map { it.label() }.toTypedArray()
+            val current = shown.indexOfFirst { it.id == Store.elevenVoiceId }.coerceAtLeast(0)
+            AlertDialog.Builder(requireContext())
+                .setTitle("Voice · " + voiceTypeLabel())
+                .setSingleChoiceItems(labels, current) { dialog, which ->
+                    dialog.dismiss()
+                    selectElevenVoice(shown[which])
+                }
+                .setNeutralButton("Refresh list") { _, _ ->
+                    loadElevenVoices(true) { _, r ->
+                        toast(r ?: "Voice list naye sire se aa gayi.")
+                        chooseElevenVoice()
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    /** Saves the voice, makes sure ElevenLabs is the active engine, and plays a short sample in it. */
+    private fun selectElevenVoice(v: ElevenLabsClient.Voice) {
+        Store.elevenVoiceId = v.id
+        Store.elevenVoiceName = v.name
+        if (Store.ttsEngine != "eleven" && Store.elevenKeyStatus != "invalid" && !Store.elevenKey.isNullOrBlank()) {
+            Store.ttsEngine = "eleven"
+        }
+        refreshVoiceRows()
+        testVoice()
+    }
+
+    /** Male / Female / Any. A gendered choice also switches the current voice if it is the other kind. */
+    private fun setVoiceType(type: String) {
+        Store.elevenGender = type
+        refreshVoiceRows()
+        if (type == "any") return
+        if (Store.elevenKey.isNullOrBlank()) {
+            toast("Voice type save ho gaya. Key daalte hi ye voice type lagega.")
+            return
+        }
+        loadElevenVoices(false) { list, reason ->
+            if (reason != null) toast(reason + " Basic voices se chun raha hoon.")
+            val current = list.firstOrNull { it.id == Store.elevenVoiceId }
+            if (current != null && current.gender == type) {
+                if (Store.ttsEngine != "eleven" && Store.elevenKeyStatus != "invalid") Store.ttsEngine = "eleven"
+                refreshVoiceRows()
+                testVoice()
+                return@loadElevenVoices
+            }
+            val pick = list.firstOrNull { it.gender == type }
+            if (pick == null) {
+                toast("Is type ki koi voice nahi mili.")
+                return@loadElevenVoices
+            }
+            selectElevenVoice(pick)
+        }
+    }
 
     private fun chooseVoice(valueView: TextView) {
         toast("Voices dhoondh raha hoon…")
@@ -1118,7 +1465,7 @@ class VoiceAiFragment : Fragment() {
         card.addView(v)
     }
 
-    private fun valueRow(icon: Int, title: String, value: String, onClick: (View, TextView) -> Unit) {
+    private fun valueRow(icon: Int, title: String, value: String, onClick: (View, TextView) -> Unit): TextView {
         val row = inflateRow()
         row.findViewById<ImageView>(R.id.rowIcon).setImageResource(icon)
         row.findViewById<TextView>(R.id.rowTitle).text = title
@@ -1126,6 +1473,7 @@ class VoiceAiFragment : Fragment() {
         tv.text = value
         row.setOnClickListener { onClick(it, tv) }
         addRow(row)
+        return tv
     }
 
     private fun switchRow(icon: Int, title: String, checked: Boolean, onChange: (Boolean) -> Unit) {

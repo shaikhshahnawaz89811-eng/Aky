@@ -98,6 +98,9 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         private const val FILLER_FIRST_MS = 1_600L
         private const val FILLER_GAP_MS = 7_000L
 
+        /** After an ElevenLabs network / quota failure: use the phone voice for this long before trying again. */
+        private const val ELEVEN_BACKOFF_MS = 60_000L
+
         /** After the wake phrase: how long the mic waits for the first word (audit Sec 9.4: ~6 s). */
         private const val WAKE_WINDOW_MS = 6_000L
     }
@@ -143,6 +146,11 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     private var fillerCount = 0
     private var fillerAttempts = 0
     private var wakePending = false // opened by the wake word and nothing was said yet
+
+    // ElevenLabs engine (audit PDF Sec 9.7): own PCM player; the platform TTS below is its fallback
+    private var eleven: ElevenPlayer? = null
+    private var elevenPieces: List<String> = emptyList()
+    private var elevenBackoffUntil = 0L
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -323,6 +331,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
             // ignore
         }
         recognizer = null
+        eleven?.stop()
+        eleven = null
         try {
             tts?.shutdown()
         } catch (_: Exception) {
@@ -764,6 +774,16 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     /** Synthesizes the filler phrases on a second TTS engine so the reply engine's queue is never delayed. */
     private fun ensurePhraseCache() {
         if (!Store.fillers) return
+        val elevenKey = Store.elevenKey
+        if (Store.elevenActive() && !elevenKey.isNullOrBlank() && SystemClock.elapsedRealtime() >= elevenBackoffUntil) {
+            // fillers in the same ElevenLabs voice as the replies (audit Sec 9.7: match the live voice)
+            val voiceId = Store.elevenVoiceId
+            val model = Store.elevenModel
+            val speed = Store.ttsSpeed
+            phrases.prepareEleven("eleven|" + voiceId + "|" + model + "|" + speed, elevenKey, voiceId, model, speed)
+            cachePreparedKey = ""
+            return
+        }
         val key = voiceKey()
         val existing = cacheTts
         if (existing != null) {
@@ -822,6 +842,15 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         lastSpoken = clean
         setState(State.SPEAKING)
         if (countTurn) ConvKpi.inc("speaking_turns")
+        if (Store.elevenActive() && SystemClock.elapsedRealtime() >= elevenBackoffUntil) {
+            speakEleven(clean)
+        } else {
+            speakPlatform(clean)
+        }
+    }
+
+    /** Phone voice (android.speech.tts). Also the fallback when ElevenLabs fails. */
+    private fun speakPlatform(clean: String) {
         ensureTts {
             val engine = tts
             if (engine == null || state != State.SPEAKING) return@ensureTts
@@ -837,6 +866,52 @@ class VoiceController(context: Context, private val cb: Callbacks) {
                 engine.speak(pieces[i], queue, null, base + "_" + i)
             }
         }
+    }
+
+    /**
+     * ElevenLabs voice: sentence-sized chunks (small first chunk = quick first audio) are streamed as PCM.
+     * Any failure hands the unspoken rest to the phone voice, so the assistant never goes silent.
+     */
+    private fun speakEleven(clean: String) {
+        val key = Store.elevenKey
+        if (key.isNullOrBlank()) {
+            speakPlatform(clean)
+            return
+        }
+        eleven?.stop()
+        requestFocus()
+        val pieces = SpeechText.chunks(clean, 220)
+        elevenPieces = pieces
+        tracker.reset(clean, pieces)
+        val player = ElevenPlayer(object : ElevenPlayer.Listener {
+            override fun onChunkStart(index: Int) {
+                chunkStarted(index)
+            }
+
+            override fun onDone() {
+                finishedSpeaking()
+            }
+
+            override fun onFailed(fromIndex: Int, reason: String, authFailure: Boolean) {
+                elevenFailed(fromIndex, reason, authFailure)
+            }
+        })
+        eleven = player
+        player.play(pieces, key, Store.elevenVoiceId, Store.elevenModel, Store.ttsSpeed)
+    }
+
+    private fun elevenFailed(fromIndex: Int, reason: String, authFailure: Boolean) {
+        eleven = null
+        if (state != State.SPEAKING) return
+        ConvKpi.inc("eleven_fallback")
+        if (authFailure) {
+            Store.elevenKeyStatus = "invalid"
+        } else {
+            elevenBackoffUntil = SystemClock.elapsedRealtime() + ELEVEN_BACKOFF_MS
+        }
+        cb.onMessage(reason + " Phone ki awaaz se bol raha hoon.")
+        val rest = elevenPieces.drop(fromIndex.coerceAtLeast(0)).joinToString(" ").trim()
+        if (rest.isBlank()) finishedSpeaking() else speakPlatform(rest)
     }
 
     private fun configure(engine: TextToSpeech, text: String) {
@@ -960,6 +1035,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     private fun stopSpeech() {
         stopBargeWatch()
         phrases.stop()
+        eleven?.stop()
+        eleven = null
         try {
             tts?.stop()
         } catch (_: Exception) {
@@ -977,10 +1054,12 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         val detector = BargeInDetector(app, level == "strict", object : BargeInDetector.Listener {
             override fun onCandidate() {
                 ConvKpi.inc("barge_candidates")
+                eleven?.duck() // only possible with the own PCM player (audit: duck -> verify -> cancel)
             }
 
             override fun onRejected() {
                 ConvKpi.inc("barge_rejected")
+                eleven?.unduck()
             }
 
             override fun onValid() {
@@ -1035,6 +1114,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     }
 
     private fun requestFocus() {
+        if (focusRequest != null) return // already held for this reply (ElevenLabs -> phone voice fallback asks twice)
         val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
             .setAudioAttributes(

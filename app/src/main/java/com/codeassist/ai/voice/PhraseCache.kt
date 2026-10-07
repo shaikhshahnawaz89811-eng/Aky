@@ -4,6 +4,9 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import com.codeassist.ai.ai.ElevenLabsClient
 import android.speech.tts.TextToSpeech
 import java.io.File
 
@@ -33,6 +36,10 @@ class PhraseCache(context: Context) {
     private val ready = HashSet<String>()
     private var player: MediaPlayer? = null
     private var counter = 0
+    private val main = Handler(Looper.getMainLooper())
+
+    @Volatile
+    private var elevenBusy = false
 
     private fun all(): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>()
@@ -70,6 +77,45 @@ class PhraseCache(context: Context) {
                 // cache is an optimisation; the normal TTS path still works
             }
         }
+    }
+
+    /**
+     * Same cache, but the phrases are synthesized with ElevenLabs in the chosen voice so fillers match the reply voice
+     * (part 2). Runs on a background thread, stops quietly at the first failure (the normal path still works), and
+     * costs a few hundred characters once per voice / speed / model. Call from the main thread.
+     */
+    fun prepareEleven(voiceKey: String, apiKey: String, voiceId: String, model: String, speed: Float) {
+        val newKey = Integer.toHexString(voiceKey.hashCode())
+        if (newKey != key) {
+            key = newKey
+            ready.clear()
+            dir.mkdirs()
+            dir.listFiles()?.forEach { if (!it.name.startsWith(key + "_")) it.delete() }
+        }
+        val missing = ArrayList<Pair<String, String>>()
+        for ((id, text) in all()) {
+            val f = fileFor(id)
+            if (f.exists() && f.length() > 1024) ready.add(id) else missing.add(id to text)
+        }
+        if (missing.isEmpty() || elevenBusy) return
+        elevenBusy = true
+        val forKey = key
+        val folder = dir
+        Thread({
+            try {
+                for ((id, text) in missing) {
+                    val pcm = ElevenLabsClient.synthesizePcm(apiKey, voiceId, model, text, speed)
+                    if (pcm.size < 2048) break
+                    val f = File(folder, forKey + "_" + id + ".wav")
+                    f.writeBytes(WavHeader.wrap(pcm, ElevenLabsClient.SAMPLE_RATE))
+                    main.post { if (key == forKey) ready.add(id) }
+                }
+            } catch (_: Throwable) {
+                // cache is an optimisation: no network, quota or key problem just means no filler audio
+            } finally {
+                elevenBusy = false
+            }
+        }, "eleven-phrases").start()
     }
 
     /** Called when a "pc_" utterance finished; returns true when [utteranceId] was a cache job. */
