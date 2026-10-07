@@ -436,3 +436,66 @@ dependency graph both succeeded; all 123 XML files and scanned resource referenc
 The harness's Gradle test-worker fork did not connect, so this is not reported as a successful Android Gradle test task.
 Full Android compile / lint / APK and device verification still require an Android SDK / accepted SDK license, then
 `./gradlew assembleDebug testDebugUnitTest lintDebug`. OCR language coverage is Latin / English, not Devanagari.
+
+
+---
+
+# Offline fix, part 1 of 2 (Qwen answers) — honest status
+
+**Why:** the Transfer Dock chat log showed the offline Qwen answering "Hello" with a long ramble that contains foreign-script
+junk, "mera naam shahnawaz hai" with "Your name is S. N. H. H. H. ... I. I. I.", and a photo question with a loop, while
+Gemini answered correctly and remembered the chat. The code review that followed (see the report) found: hand-built ChatML
+that the library may or may not read as intended (no stop at `<|im_end|>`), temperature 0.7 with no top-k / top-p / repeat
+penalty (free API), junk replies fed back into the next prompt, a long English system prompt for a 1.5B model, an image-only
+question that reached the model as a bare sentence, and the system prompt counted twice against the history budget.
+
+Same situation as before: written and statically checked in a sandbox with **no Android SDK, no Kotlin compiler and no
+network**, so it has **never been compiled or run**. Static checks done: brackets / strings / templates balance in every new
+or edited Kotlin file (lexer that understands string templates), every project member used on the new objects exists, the
+new JVM tests were hand-walked. The detection logic (`ReplyGuard`, `ChatMl.clean` / `cutDialog`, small-talk rule) was
+re-implemented in Python and run on the **real garbage replies from the chat log** plus normal answers, code, lists and
+Hinglish text: junk and loops are caught, normal text is left untouched. Send the CI compiler output if anything fails.
+
+| Part | Status |
+|---|---|
+| `ReplyGuard` (pure Kotlin): junk / loop / low-variety detection, trim to last sentence, small-talk limit, history cleaning, photo-question rule | Written, JVM tests written (`ReplyGuardTest`), not run |
+| `ChatMl.clean` (leaked headers), `ChatMl.cutDialog`, `ChatMl.buildPlain`; history from `ReplyGuard.cleanHistory` | Written, JVM tests written (`ChatMlGuardTest`, old `ChatMlTest` unchanged), not run |
+| `LocalTemplate` (pure): three prompt shapes + probe judge | Written, JVM tests written (`LocalTemplateTest`), not run |
+| `LocalCalibration`: runs the probe on the phone once per model file | Written, **needs a device test** (this is the part that settles the real cause) |
+| `ChatRunner.runLocal`: shape, small token budget for greetings, image notice, guard, one retry, error message | Written, needs device test |
+| `Store`: `localTemp` default 0.3 (new key `local_temp_v2`), `localTemplate*`, `systemPromptIsCustom` | Written |
+| Qwen options: Temperature list has 0.3, new **Prompt template** row | Written, needs device test |
+| KPI screen: "Offline Qwen jawab" section | Written, needs device test |
+| `versionCode 9`, `versionName 1.8` | Done |
+
+## How to check it on the phone (about 10 minutes)
+
+1. Install, open Settings > Voice and AI > Qwen options: Temperature shows 0.3 and the row **Prompt template · auto (test baaki)** exists.
+2. Choose the on-device brain and send **Hello**. The first reply is slower (label "Model ki jaanch: chatml ..." for about a minute,
+   once). Expected: a short greeting, not a ramble.
+3. Settings > Activity and debug > Debug: conversation KPIs > section **Offline Qwen jawab**: it shows which shape was chosen and
+   the three test lines (tokens, "ruka / nahi ruka", "saaf / gadbad"). **Send me that text.** If it says "KOI shape saaf nahi
+   nikla", the library itself is the problem and part 2 (engine swap) is the real fix.
+4. Send "mera naam shahnawaz hai", then "mera naam kya hai?". Expected: the name comes back.
+5. Attach a photo and send "isko jante ho?". Expected: a straight "Qwen photo nahi dekh sakta" answer with the OCR / Gemini options.
+
+## Deliberate gaps and limits (read before testing)
+
+- **This is a safety net plus a calibration, not a new engine.** The Free llama-android API still cannot stream tokens, cannot be
+  cancelled mid-reply, and has no top-k / top-p / repeat penalty. Part 2: an engine with those controls, token streaming, a
+  working Stop, KV-cache reuse (second reply faster).
+- **The test costs time once.** In the worst case three tiny runs (48 tokens each) before the first offline reply, about a
+  minute on a slow phone. The result is remembered per model file; forcing a shape in Qwen options skips it.
+- **The guard cannot make a bad answer good.** It removes junk and loops, keeps a clean beginning and retries once. A wrong but
+  fluent answer from a 1.5B model passes. Hinglish quality needs the bigger model (part 2: model picker, Qwen2.5-3B).
+- **Tools (alarm, torch ...) from the model only work in the ChatML shape.** If the test picks another shape, exact Tier-0 phrases
+  still work; flexible phrasing falls back to plain chat.
+- **Thresholds are first guesses** (run of 5 equal words, a phrase 5 times covering 30 % of the text, unique-word ratio 0.40,
+  at least 25 characters worth keeping). They were tuned on the one chat log and a few synthetic loops, not on a test set.
+  `local_guard_trim / retry / fail` on the KPI screen show how often they fire; a high `fail` count means look at the shape test first.
+- **Foreign-script check** assumes the user writes Latin or Devanagari; if they ask for Chinese, Japanese or Korean in words
+  ("japanese mein", "translate") the check is skipped for that message.
+- **No cross-chat memory yet.** The name is remembered inside one chat because the user's turns stay in the prompt. A real
+  memory (Memory Manager, "yaad rakhna", never-store list, audit Sec 9.5) is part 2.
+- **Old saved temperature is ignored**: phones that had the previous setting (default 0.7) start at 0.3 after the update.
+

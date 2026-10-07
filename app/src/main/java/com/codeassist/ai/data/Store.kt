@@ -103,9 +103,33 @@ object Store {
         get() = prefs.getInt("local_threads", (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 6))
         set(v) = prefs.edit().putInt("local_threads", v).apply()
 
+    /**
+     * Sampling temperature of the on-device model. The Free llama-android API has no top-k / top-p / repeat
+     * penalty, so a low value is what keeps a 1.5B model from drifting into junk. New key: phones that saved the
+     * old default 0.7 get 0.3 now (offline-fix part 1).
+     */
     var localTemp: Float
-        get() = prefs.getFloat("local_temp", 0.7f)
-        set(v) = prefs.edit().putFloat("local_temp", v).apply()
+        get() = prefs.getFloat("local_temp_v2", 0.3f)
+        set(v) = prefs.edit().putFloat("local_temp_v2", v).apply()
+
+    /** Prompt shape for the on-device model: "auto" (test once, see LocalCalibration) | "chatml" | "lib" | "plain". */
+    var localTemplate: String
+        get() = prefs.getString("local_template", "auto") ?: "auto"
+        set(v) = prefs.edit().putString("local_template", v).apply()
+
+    /** Result of the last automatic test ("chatml" | "lib" | "plain" | ""), valid only for [localTemplateSig]. */
+    var localTemplateResult: String
+        get() = prefs.getString("local_template_result", "") ?: ""
+        set(v) = prefs.edit().putString("local_template_result", v).apply()
+
+    var localTemplateSig: String
+        get() = prefs.getString("local_template_sig", "") ?: ""
+        set(v) = prefs.edit().putString("local_template_sig", v).apply()
+
+    /** Human-readable lines of the last test, shown on the KPI screen. */
+    var localTemplateNote: String
+        get() = prefs.getString("local_template_note", "") ?: ""
+        set(v) = prefs.edit().putString("local_template_note", v).apply()
 
     var localDownloadId: Long
         get() = prefs.getLong("local_download_id", -1L)
@@ -128,6 +152,13 @@ object Store {
         get() = prefs.getString("sys_prompt", null)?.takeIf { it.isNotBlank() }
             ?: com.codeassist.ai.ai.Prompts.DEFAULT_SYSTEM
         set(v) = prefs.edit().putString("sys_prompt", v).apply()
+
+    /** True when the user edited the system prompt (an unchanged copy of the default does not count). */
+    val systemPromptIsCustom: Boolean
+        get() {
+            val s = prefs.getString("sys_prompt", null)?.trim()
+            return !s.isNullOrBlank() && s != com.codeassist.ai.ai.Prompts.DEFAULT_SYSTEM.trim()
+        }
 
     /** Chat that was just created by the project composer and still needs its first AI reply. */
     var pendingReplyChatId: String?

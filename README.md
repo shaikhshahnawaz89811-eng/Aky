@@ -102,6 +102,34 @@ on the device. AI replies are real: pick the on-device Qwen2.5 1.5B model or a G
 - Settings > Activity and debug > **Debug: conversation KPIs** records successful Gemini L0 turns, L1 / L2 degradation,
   Qwen fallback outcomes, and OCR successes / failures. These are on-device counts, not message contents.
 
+## Offline fix, part 1: Qwen answers that make sense
+
+Why: in a real chat log the offline Qwen answered "Hello" with a long rambling reply, wrote foreign-script junk, looped
+("I. I. I.") and forgot the user's name, while Gemini was fine. This part fixes what can be fixed without replacing the
+llama-android library (that is part 2).
+
+- **Prompt-shape test** (`LocalTemplate`, `LocalCalibration`): the app does not know what the library does with the prompt
+  text (adds its own template? reads `<|im_start|>` as real tokens? stops at `<|im_end|>`?). Before the first offline reply
+  it tries three shapes with a tiny "Hello" (hand-built ChatML, library template, plain "User: / Assistant:") and keeps the
+  first one that stops by itself and answers sensibly. Once per model file, about a minute. Settings > Voice and AI > Qwen
+  options > **Prompt template** can force a shape or run the test again.
+- **Lower temperature** (default 0.3, was 0.7): the free API has no top-k / top-p / repeat penalty, so randomness is what
+  produced the junk.
+- **Reply guard** (`ReplyGuard`): foreign-script junk, letter / phrase loops and low-variety text are detected on the finished
+  reply. A clean beginning is kept ("Hello! How can I help you today?"), an unusable reply gets ONE retry with a minimal prompt,
+  and if that fails too the app says so instead of showing junk. A reply that ran into the token limit is cut at the last
+  full sentence (an open code block is closed).
+- **Greetings stay short**: "hello", "kaise ho", "mera naam ... hai" get a small token budget and at most three sentences.
+- **Clean history**: failed and broken replies are never put back into the next prompt, and rambling ones are trimmed. The
+  user's own turns always stay, so "mera naam X hai" is still there for "mera naam kya hai?". The old double subtraction of the
+  system prompt from the history budget is gone.
+- **Short system prompt for the phone model** (plain English rules, a Hinglish rule, a "remember this chat" rule). A system
+  prompt you edited yourself is still used.
+- **Photo question without a readable photo**: a short question with an image Qwen cannot read ("isko jante ho?") now gets a
+  straight answer and the two ways forward (OCR switch, Gemini) instead of an invented reply.
+- Settings > Activity and debug > **Debug: conversation KPIs** has a new section: chosen template, the three test lines,
+  how many replies were trimmed, retried or rejected.
+
 ## Network and privacy
 
 - `INTERNET` is used only for Gemini and for downloading the Qwen2.5 model. Qwen2.5 inference is offline.

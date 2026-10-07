@@ -23,8 +23,38 @@ object Prompts {
             "no tool. Never invent a phone number or an app name. If something needed is missing, ask ONE short " +
             "question instead of guessing. The app shows the tool results to the user, so do not describe them."
 
+    /**
+     * System prompt for the on-device 1.5B model: short, plain English instructions (a small model follows these
+     * better than a long Hinglish text), an explicit Hinglish rule and an explicit "remember this chat" rule.
+     * A system prompt the user edited in Settings is used instead (see [systemLocal]).
+     */
+    const val LOCAL_SYSTEM =
+        "You are CodeAssist AI, a friendly assistant inside an Android app. " +
+            "Reply in the same language and script the user writes. If the user writes Hinglish (Hindi in English " +
+            "letters), reply in simple Roman Hinglish. Keep answers short and clear; put code in Markdown code blocks. " +
+            "Remember what the user told you earlier in this chat (name, preferences) and use it when asked. " +
+            "Never invent facts: if you do not know, say so. Stop when the answer is complete."
+
+    /** Used for the one retry after a rejected reply: as little text as possible for the model to trip over. */
+    const val LOCAL_MINIMAL_SYSTEM =
+        "You are a helpful assistant. Answer briefly in the user's language. " +
+            "If the user writes Hinglish (Hindi in English letters), answer in simple Roman Hinglish."
+
+    /** A greeting needs a greeting back, not 384 tokens: bounds the damage if the model does not stop. */
+    const val SMALL_TALK_TOKENS = 90
+
     fun system(viaVoice: Boolean): String {
         val sb = StringBuilder(Store.systemPrompt.trim())
+        when (Store.replyLength) {
+            "Short" -> sb.append("\nKeep every answer very short.")
+            "Long" -> sb.append("\nGive detailed, step-by-step answers when that helps.")
+        }
+        if (viaVoice) sb.append("\n").append(VOICE_HINT)
+        return sb.toString()
+    }
+
+    fun systemLocal(viaVoice: Boolean): String {
+        val sb = StringBuilder(if (Store.systemPromptIsCustom) Store.systemPrompt.trim() else LOCAL_SYSTEM)
         when (Store.replyLength) {
             "Short" -> sb.append("\nKeep every answer very short.")
             "Long" -> sb.append("\nGive detailed, step-by-step answers when that helps.")
@@ -56,7 +86,7 @@ object Prompts {
     /**
      * The free llama-android API is single-turn, so earlier turns are folded into the prompt text.
      * Newest turns are kept first; the latest user message always survives (its head is trimmed
-     * only when it alone exceeds the budget).
+     * only when it alone exceeds the budget). Failed and broken replies are left out.
      */
     fun buildLocal(previous: List<Message>, latest: String, budgetChars: Int): String {
         val newest = if (latest.length > budgetChars) {
@@ -65,10 +95,11 @@ object Prompts {
             latest
         }
         var remaining = budgetChars - newest.length
-        if (previous.isEmpty() || remaining < 240) return newest
+        val usable = ReplyGuard.cleanHistory(previous)
+        if (usable.isEmpty() || remaining < 240) return newest
 
         val lines = ArrayList<String>()
-        for (m in previous.asReversed()) {
+        for (m in usable.asReversed()) {
             var t = m.text.trim()
             if (t.isEmpty()) continue
             if (t.length > 700) t = t.take(700) + "..."

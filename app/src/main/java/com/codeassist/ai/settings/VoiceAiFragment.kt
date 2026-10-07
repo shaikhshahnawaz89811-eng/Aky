@@ -959,6 +959,7 @@ class VoiceAiFragment : Fragment() {
         items.add("Temperature · " + fmtF(Store.localTemp))
         items.add("Reply length · " + Store.replyLength)
         items.add("System prompt · edit")
+        items.add("Prompt template · " + templateLabel())
         val oldPhi = Modules.legacyPhiBytes()
         if (oldPhi > 0L) items.add("Purani Phi-4 file delete · " + Modules.fmt(oldPhi))
         AlertDialog.Builder(requireContext())
@@ -973,7 +974,7 @@ class VoiceAiFragment : Fragment() {
                         Store.localThreads = it.toInt()
                         needsReload()
                     }
-                    2 -> choose("Temperature", listOf("0.2", "0.5", "0.7", "1.0"), fmtF(Store.localTemp)) {
+                    2 -> choose("Temperature", listOf("0.2", "0.3", "0.5", "0.7", "1.0"), fmtF(Store.localTemp)) {
                         Store.localTemp = it.toFloat()
                         needsReload()
                     }
@@ -982,11 +983,37 @@ class VoiceAiFragment : Fragment() {
                         showLocalOptions()
                     }
                     4 -> editSystemPrompt { showLocalOptions() }
-                    5 -> confirmDeleteOldPhi()
+                    5 -> chooseTemplate()
+                    6 -> confirmDeleteOldPhi()
                 }
             }
             .setNegativeButton("Done", null)
             .show()
+    }
+
+    /** "auto" plus what the last test chose, for example "auto → chatml". */
+    private fun templateLabel(): String {
+        val t = Store.localTemplate
+        if (t != "auto") return t
+        val r = Store.localTemplateResult
+        return if (r.isBlank()) "auto (test baaki)" else "auto → $r"
+    }
+
+    /**
+     * Offline answers are asked in one of three prompt shapes (chatml / lib / plain). "auto" tests them once on
+     * this phone with a tiny "Hello" before the next offline reply; the result is on the KPI screen.
+     */
+    private fun chooseTemplate() {
+        choose("Prompt template", listOf("auto", "chatml", "lib", "plain"), Store.localTemplate) {
+            Store.localTemplate = it
+            // a fresh test on the next offline reply, also when "auto" is picked again
+            Store.localTemplateSig = ""
+            toast(
+                if (it == "auto") "Agli offline reply se pehle ek chhota test chalega (lagbhag 1 minute, ek baar)."
+                else "Template badal gaya: $it"
+            )
+            showLocalOptions()
+        }
     }
 
     private fun confirmDeleteOldPhi() {

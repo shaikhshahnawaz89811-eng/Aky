@@ -25,7 +25,8 @@ import java.util.Locale
  */
 object LocalLlm {
     class LoadFailure(message: String) : Exception(message)
-    class Reply(val text: String, val tokens: Int, val tokensPerSecond: Float, val millis: Long)
+    /** [capped] = the model ran into maxTokens instead of stopping by itself. */
+    class Reply(val text: String, val tokens: Int, val tokensPerSecond: Float, val millis: Long, val capped: Boolean = false)
 
     private val lock = Mutex()
     private var model: LlamaModel? = null
@@ -98,11 +99,13 @@ object LocalLlm {
                         systemPrompt = system,
                         maxTokens = maxTokens
                     )
+                    val generated = r.tokensGenerated.toInt()
                     Reply(
                         clean(r.text),
-                        r.tokensGenerated.toInt(),
+                        generated,
                         r.tokensPerSecond.toFloat(),
-                        System.currentTimeMillis() - started
+                        System.currentTimeMillis() - started,
+                        generated >= maxTokens - 1
                     )
                 }
             } finally {

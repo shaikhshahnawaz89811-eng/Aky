@@ -2,6 +2,7 @@ package com.codeassist.ai.ai
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.codeassist.ai.data.Store
 import java.util.Locale
 
 /**
@@ -176,6 +177,28 @@ object ConvKpi {
             .append(" · ").append(get("fallback_failed")).append(" Qwen errors\n")
         sb.append("  Screenshot OCR (Qwen-only, opt-in): ").append(get("ocr_success"))
             .append(" read · ").append(get("ocr_failed")).append(" unreadable / failed\n")
+
+        sb.append("\nOffline Qwen jawab (offline fix part 1)\n")
+        val shape = try {
+            val chosen = Store.localTemplate
+            if (chosen == "auto") "auto → " + Store.localTemplateResult.ifBlank { "test baaki" } else chosen
+        } catch (_: Exception) {
+            "?"
+        }
+        sb.append("  prompt template: ").append(shape).append("\n")
+        val probeLines = try {
+            Store.localTemplateNote
+        } catch (_: Exception) {
+            ""
+        }
+        if (probeLines.isNotBlank()) {
+            for (line in probeLines.split('\n')) sb.append("    ").append(line).append("\n")
+        }
+        sb.append("  test chale: ").append(get("template_probe"))
+            .append(" · galat jawab trim kiye: ").append(get("local_guard_trim"))
+            .append(" · dobara koshish: ").append(get("local_guard_retry"))
+            .append(" · reject: ").append(get("local_guard_fail"))
+            .append(" · photo par seedha jawab: ").append(get("local_image_block")).append("\n")
 
         sb.append("\nPhase 2 exit checklist\n")
         val listenHours = get("wake_listen_ms") / 3_600_000.0

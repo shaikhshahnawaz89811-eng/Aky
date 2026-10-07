@@ -3,6 +3,7 @@ package com.codeassist.ai.ai
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.codeassist.ai.data.AttachKind
 import com.codeassist.ai.data.Message
 import com.codeassist.ai.data.Role
 import com.codeassist.ai.data.Store
@@ -235,6 +236,15 @@ object ChatRunner {
 
             return try {
                 val local = runLocal(app, run, history, latest)
+                if (local.state == "error") {
+                    ConvKpi.inc("fallback_failed")
+                    return Message(
+                        id = run.messageId, role = Role.AI,
+                        text = "$transition\n\n" + local.text,
+                        state = "error", engine = "local",
+                        note = "Fallback ${level.label} · Qwen reply rejected"
+                    )
+                }
                 ConvKpi.inc("fallback_success")
                 local.copy(
                     text = FallbackPolicy.successLine(level) + "\n\n" + local.text,
@@ -345,11 +355,21 @@ object ChatRunner {
             run.label = "Pichla reply khatam ho raha hai"
             postProgress(run)
         }
+
+        // Which prompt shape this model + library pair really understands. Tested once per model file
+        // (LocalCalibration); a forced choice in Qwen options skips the test.
+        val kind = LocalCalibration.resolve { status ->
+            run.label = status
+            postProgress(run)
+        }
         run.label = "Qwen soch raha hai"
         postProgress(run)
 
+        // A greeting gets a short budget: if the model does not stop, little damage is done.
+        val smallTalk = latest.attachments.isEmpty() && ReplyGuard.isSmallTalk(latest.text)
         var maxTokens = Prompts.maxTokensLocal(Store.replyLength)
         if (run.viaVoice && Store.replyLength != "Long") maxTokens = minOf(maxTokens, 220)
+        if (smallTalk) maxTokens = minOf(maxTokens, Prompts.SMALL_TALK_TOKENS)
         val budget = Prompts.budgetChars(Store.localContext, maxTokens)
         val payload = withContext(Dispatchers.IO) {
             AttachmentText.read(
@@ -357,29 +377,49 @@ object ChatRunner {
                 ocrImages = Store.localScreenshotOcr
             )
         }
-        val system = Prompts.system(run.viaVoice)
-        // Tools go into the prompt only for a short plain message that mentions a phone action (see ActionHint).
-        val wantTools = latest.attachments.isEmpty() && ActionHint.looksLikeAction(latest.text)
-        val prompt = if (wantTools) {
-            ChatMl.build(
-                ChatMl.withTools(system, Prompts.TOOL_RULES, ToolSpecs.qwenToolsBlock()),
-                history, Prompts.combineLatest(latest.text, payload.text), budget
+
+        // A short question about a photo, but nothing readable came out of it: say so. A 1.5B model that only
+        // sees "isko jante ho?" makes something up.
+        val hasImage = latest.attachments.any { it.kind == AttachKind.IMAGE }
+        if (ReplyGuard.needsImage(latest.text, hasImage, payload.text.isNotBlank())) {
+            ConvKpi.inc("local_image_block")
+            run.detail = "image: local model skipped"
+            val how = if (Store.localScreenshotOcr) {
+                "On-device OCR ko is photo mein padhne layak text nahi mila. "
+            } else {
+                "Photo ka text padhwana ho toh Voice and AI mein \"Qwen ke liye attached-image OCR\" on karo. "
+            }
+            return Message(
+                id = run.messageId, role = Role.AI, engine = "local",
+                text = "Ye photo offline Qwen nahi dekh sakta: ye sirf text padhta hai, isliye main andaza lagakar " +
+                    "jawab nahi dunga.\n\n" + how +
+                    "Photo samjhane ke liye Gemini chuno (internet chahiye) ya photo ka text yahan paste karo.",
+                note = "Qwen2.5 1.5B · text-only"
+            )
+        }
+
+        val system = Prompts.systemLocal(run.viaVoice)
+        val userText = Prompts.combineLatest(latest.text, payload.text)
+        // Tools only in the verified ChatML shape: the repair retry below needs real turn markers.
+        val wantTools = kind == LocalTemplate.Kind.CHATML && latest.attachments.isEmpty() &&
+            ActionHint.looksLikeAction(latest.text)
+        val built: LocalTemplate.Built = if (wantTools) {
+            LocalTemplate.Built(
+                "",
+                ChatMl.build(
+                    ChatMl.withTools(system, Prompts.TOOL_RULES, ToolSpecs.qwenToolsBlock()),
+                    history, userText, budget
+                )
             )
         } else {
-            ChatMl.build(
-                system, history, Prompts.combineLatest(latest.text, payload.text), budget - system.length
-            )
+            LocalTemplate.build(kind, system, history, userText, budget)
         }
-        // system prompt is already inside [prompt]; pass "" so the library does not add a second one
-        var reply = LocalLlm.generate("", prompt, maxTokens)
-        if (reply.text.isBlank()) {
-            throw ReplyError("Model ne khaali reply di. Dobara try karo ya Reply length badlao.")
-        }
+        var reply = LocalLlm.generate(built.system, built.prompt, maxTokens)
         var tokens = reply.tokens
         var millis = reply.millis
 
         var outcome: Message? = null
-        if (wantTools) {
+        if (wantTools && reply.text.isNotBlank()) {
             val first = PlanParser.parse(reply.text)
             var parsed: PlanParser.Parsed = first
             if (first is PlanParser.Parsed.Invalid) {
@@ -388,7 +428,7 @@ object ChatRunner {
                 postProgress(run)
                 val note = "Your tool call was not valid: " + first.reason +
                     ". Reply again with correct <tool_call> blocks, or answer in plain text."
-                reply = LocalLlm.generate("", ChatMl.appendTurn(prompt, reply.text, note), maxTokens)
+                reply = LocalLlm.generate("", ChatMl.appendTurn(built.prompt, reply.text, note), maxTokens)
                 tokens += reply.tokens
                 millis += reply.millis
                 parsed = PlanParser.parse(reply.text)
@@ -412,16 +452,50 @@ object ChatRunner {
         run.tps = reply.tokensPerSecond
         if (outcome != null) return outcome
 
+        // Plain answer: check it, keep the clean beginning of a rambling one, ask once more for a broken one.
         val plain = if (wantTools) PlanParser.parse(reply.text) else null
-        val shown = if (plain is PlanParser.Parsed.Text) plain.text else reply.text
-        if (shown.isBlank()) {
-            throw ReplyError("Model ne khaali reply di. Dobara try karo ya Reply length badlao.")
+        var shown = if (plain is PlanParser.Parsed.Text) plain.text else LocalTemplate.finish(kind, reply.text)
+        var verdict = ReplyGuard.inspect(shown, latest.text, reply.capped, smallTalk)
+        var retried = false
+        if (!verdict.ok) {
+            retried = true
+            ConvKpi.inc("local_guard_retry")
+            run.label = "Jawab saaf nahi tha, dobara soch raha hoon"
+            postProgress(run)
+            val retryTokens = minOf(maxTokens, 200)
+            val retryBuilt = LocalTemplate.build(
+                kind, Prompts.LOCAL_MINIMAL_SYSTEM, ReplyGuard.cleanHistory(history).takeLast(2), userText,
+                Prompts.budgetChars(Store.localContext, retryTokens)
+            )
+            reply = LocalLlm.generate(retryBuilt.system, retryBuilt.prompt, retryTokens)
+            tokens += reply.tokens
+            millis += reply.millis
+            shown = LocalTemplate.finish(kind, reply.text)
+            verdict = ReplyGuard.inspect(shown, latest.text, reply.capped, smallTalk)
+            run.tokens = tokens
+            run.tps = reply.tokensPerSecond
+        }
+        if (!verdict.ok) {
+            ConvKpi.inc("local_guard_fail")
+            val why = verdict.problem ?: "unusable"
+            run.detail = "local reply refused: $why"
+            return Message(
+                id = run.messageId, role = Role.AI, engine = "local", state = "error",
+                text = "Offline model ne is baar saaf jawab nahi diya (ye chhota 1.5B model hai). " +
+                    "Sawaal thoda chhota karke dobara poochho, ya Gemini chuno.",
+                note = "Qwen2.5 1.5B · jawab reject ($why)"
+            )
+        }
+        if (verdict.problem != null) {
+            ConvKpi.inc("local_guard_trim")
+            run.detail = "local reply trimmed: " + verdict.problem
         }
         val speed = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
         val secs = millis / 1000
+        val shape = if (retried) kind.key + " · 2. koshish" else kind.key
         return Message(
-            id = run.messageId, role = Role.AI, text = shown, engine = "local",
-            note = noteWith("Qwen2.5 1.5B · $speed tok/s · ${secs}s", payload.skipped)
+            id = run.messageId, role = Role.AI, text = verdict.text, engine = "local",
+            note = noteWith("Qwen2.5 1.5B · $speed tok/s · ${secs}s · $shape", payload.skipped)
         )
     }
 
