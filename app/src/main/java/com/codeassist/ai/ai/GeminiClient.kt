@@ -111,6 +111,29 @@ object GeminiClient {
         tools: List<ToolSpec>,
         isCancelled: () -> Boolean,
         onDelta: (String) -> Unit
+    ): Streamed = streamWithToolsTimeouts(
+        key, model, system, turns, temperature, tools,
+        connectTimeoutMs = 15_000,
+        readTimeoutMs = 90_000,
+        isCancelled = isCancelled,
+        onDelta = onDelta
+    )
+
+    /**
+     * Timeout-configurable form used by B2 routing. Shorter bounds let a slow cloud turn degrade to
+     * the on-device model rather than making the user wait through the general-purpose 90 s timeout.
+     */
+    fun streamWithToolsTimeouts(
+        key: String,
+        model: String,
+        system: String,
+        turns: List<Turn>,
+        temperature: Float,
+        tools: List<ToolSpec>,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+        isCancelled: () -> Boolean,
+        onDelta: (String) -> Unit
     ): Streamed {
         if (!model.matches(Regex("[A-Za-z0-9._-]+"))) throw ApiError(0, "Gemini model ka naam galat hai.")
 
@@ -149,7 +172,11 @@ object GeminiClient {
             )
         }
 
-        val conn = open("$BASE/models/$model:streamGenerateContent?alt=sse", "POST", key)
+        val conn = open(
+            "$BASE/models/$model:streamGenerateContent?alt=sse", "POST", key,
+            connectTimeoutMs = connectTimeoutMs,
+            readTimeoutMs = readTimeoutMs
+        )
         val out = StringBuilder()
         val calls = ArrayList<FnCall>()
         var blocked: String? = null
@@ -244,11 +271,17 @@ object GeminiClient {
         return JSONArray().put(JSONObject().put("functionDeclarations", decls))
     }
 
-    private fun open(url: String, method: String, key: String): HttpURLConnection {
+    private fun open(
+        url: String,
+        method: String,
+        key: String,
+        connectTimeoutMs: Int = 15_000,
+        readTimeoutMs: Int = 90_000
+    ): HttpURLConnection {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = method
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 90_000
+        conn.connectTimeout = connectTimeoutMs
+        conn.readTimeout = readTimeoutMs
         conn.setRequestProperty("x-goog-api-key", key)
         conn.setRequestProperty("Content-Type", "application/json")
         if (method == "POST") conn.doOutput = true

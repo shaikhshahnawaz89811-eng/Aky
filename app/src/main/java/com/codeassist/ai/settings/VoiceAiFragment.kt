@@ -178,6 +178,24 @@ class VoiceAiFragment : Fragment() {
         localCard = newCard()
         geminiCard = newCard()
 
+        section("Reliability and local reading")
+        card {
+            switchRow(R.drawable.ic_globe, "Gemini se Qwen automatic fallback", Store.automaticFallback) {
+                Store.automaticFallback = it
+            }
+            noteRow(
+                "Sirf timeout, network, rate-limit ya server failure par is turn ke liye installed Qwen chalta hai. " +
+                    "Aapka selected brain Gemini hi rahega; agli turn par Gemini phir try hoga."
+            )
+            switchRow(R.drawable.ic_image, "Qwen ke liye attached-image OCR", Store.localScreenshotOcr) {
+                Store.localScreenshotOcr = it
+            }
+            noteRow(
+                "Optional Latin / English text OCR phone par hota hai. OCR text sirf Qwen prompt mein jaata hai; " +
+                    "attachments par phone-action tools phir bhi band rehte hain."
+            )
+        }
+
         section("Conversation")
         card {
             valueRow(R.drawable.ic_mic, "Mic mode", micModeLabel()) { anchor, tv ->
@@ -314,6 +332,8 @@ class VoiceAiFragment : Fragment() {
                 "Qwen2.5 (on-device): aapka text sirf is phone par process hota hai.\n\n" +
                     "Gemini: aapka text (aur bheji gayi image / text file) Google ko jaata hai. " +
                     "API key sirf is phone par Android Keystore se encrypted rehti hai.\n\n" +
+                    "Qwen screenshot OCR ON ho toh image ka pehchana hua text isi phone par banta hai. " +
+                    "Ye OCR setting Gemini ko bheje gaye original attachments ko nahi badalti.\n\n" +
                     "ElevenLabs voice (ON ho toh): jo reply bolna hai wo text ElevenLabs ko jaata hai. Key sirf is phone par encrypted rehti hai, " +
                     "app mein build ke saath nahi aati.\n\n" +
                     "Voice: speech recognition Android / Google service karti hai. Offline pack ON ho toh " +

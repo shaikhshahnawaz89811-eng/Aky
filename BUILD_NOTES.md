@@ -342,8 +342,8 @@ network**, so it has **never been compiled or run**. Send the CI compiler output
 
 | | Scope (items of the old Part B list) | Status |
 |---|---|---|
-| **B1** (this zip) | 1. one plan format for both brains, JSON check, repair retry, question instead of a guess · 2. tools behind the risk-tier policy gate with ActivityLog / Undo, T2 tap-to-confirm | Written, never compiled |
-| **B2** (next) | 3. automatic fallback levels L0 / L1 / L2 (Gemini timeout or no internet -> Qwen with one honest line, and back) · 4. optional OCR so Qwen can read screenshots of code (needs a new dependency) · Settings switch + KPI lines for both | Not started |
+| **B1** (base ZIP) | 1. one plan format for both brains, JSON check, repair retry, question instead of a guess · 2. tools behind the risk-tier policy gate with ActivityLog / Undo, T2 tap-to-confirm | Included; see B1 notes above |
+| **B2** (this update) | 3. automatic fallback levels L0 / L1 / L2 (Gemini timeout or no internet -> Qwen with one honest line, and back) · 4. optional OCR so Qwen can read screenshots of code · Settings switch + KPI lines for both | Implemented below; still needs Android build / device verification |
 
 B2 needs B1 because the fallback has to hand the SAME plan format to whichever brain answers.
 
@@ -401,8 +401,38 @@ calls, the app checks and runs them, and you get ONE merged reply.
 - Gemini function declarations use the proto type names (`OBJECT`, `STRING`, `INTEGER`, `BOOLEAN`); written from the API docs, not run.
 - The `Message` class got two new nullable fields (`actions`, `pending`); chats saved by older builds load fine (they are `null`).
 
-## Part B2 (next)
+## Part B2 scope (as listed in the Part A / B1 handoff)
 
 3. Degrade levels (audit Sec 9.9): Gemini timeout / no internet switches that turn to Qwen with one honest line, and back; the level
-   is shown and counted in the KPI screen.
+    is shown and counted in the KPI screen.
 4. Optional: OCR so Qwen can use screenshots of code (needs a new dependency).
+
+
+---
+
+# Qwen2.5 tools, part B2 of 2 (fallback + optional OCR) — implementation status
+
+## Implemented in this source
+
+| Piece | Behavior |
+|---|---|
+| L0 | Successful Gemini turns are counted as full-cloud turns. The chosen provider is not mutated. |
+| L1 | Connect/read timeouts, transient I/O, HTTP 408 / 429 / 5xx may fall back to an installed Qwen model for this turn. |
+| L2 | DNS / no-route failures may fall back to the installed Qwen model for this turn. |
+| Return to Gemini | Automatic fallback is per-turn; the next user message starts with the selected Gemini provider again. |
+| Honest status | The in-progress label and final reply identify degraded/offline fallback. Any partial Gemini stream is cleared before local generation. |
+| Safe exclusions | Invalid credentials, HTTP 4xx other than 408 / 429, safety blocks, malformed requests, cancellation, and unrelated exceptions do not trigger fallback. |
+| Missing local model | The app says fallback was unavailable and tells the user to install Qwen; it never downloads a 986 MB model silently. |
+| Screenshot OCR | Optional, disabled by default, bundled ML Kit Latin recognition, on-device only, added only to the Qwen text prompt. |
+| B1 safety | Attachments still do not receive phone-action tools; Gemini continues to receive images only on its existing cloud path. |
+| Measurements | Local KPI counters cover L0, L1, L2, fallback success / unavailable / error, and OCR readable / failed images. No content is stored in the KPI counters. |
+
+## Verification status
+
+The source ZIP is based on the B1 tree and preserves its application ID and existing data model. The changes have not
+been built as an Android app or run on a phone yet. In this handoff, Gradle configuration and the resolved runtime
+dependency graph both succeeded; all 123 XML files and scanned resource references passed static checks. The new
+`FallbackPolicy` and its four JVM tests compiled in an isolated Kotlin harness, and all four passed with JUnitCore.
+The harness's Gradle test-worker fork did not connect, so this is not reported as a successful Android Gradle test task.
+Full Android compile / lint / APK and device verification still require an Android SDK / accepted SDK license, then
+`./gradlew assembleDebug testDebugUnitTest lintDebug`. OCR language coverage is Latin / English, not Devanagari.

@@ -29,10 +29,11 @@ import java.util.UUID
 object ChatRunner {
     class ReplyError(message: String) : Exception(message)
 
-    class Run(val chatId: String, val messageId: String, val engine: String, val viaVoice: Boolean) {
+    class Run(val chatId: String, val messageId: String, @Volatile var engine: String, val viaVoice: Boolean) {
         @Volatile var text: String = ""
         @Volatile var label: String = "Soch raha hoon"
         @Volatile var phase: String = "Soch raha hoon"
+        @Volatile var route: String = if (engine == "tool") "tier0" else "brain"
         val startedAt: Long = System.currentTimeMillis()
         @Volatile var cancelled: Boolean = false
         @Volatile var firstTokenMs: Long = 0L
@@ -71,6 +72,7 @@ object ChatRunner {
         Store.init(app)
         Modules.init(app)
         ActivityLog.init(app)
+        ConvKpi.init(app)
         val all = Store.messages(chatId)
         val userIndex = all.indexOfLast { it.role == Role.USER }
         if (userIndex < 0) return null
@@ -106,7 +108,7 @@ object ChatRunner {
                             undoId = if (tool.undo != null) entry.id else null
                         )
                     }
-                    provider == "gemini" -> runGemini(app, run, history, latest)
+                    provider == "gemini" -> runGeminiWithFallback(app, run, history, latest)
                     else -> runLocal(app, run, history, latest)
                 }
             } catch (e: CancellationException) {
@@ -156,7 +158,7 @@ object ChatRunner {
             Trace.Turn(
                 time = System.currentTimeMillis(),
                 engine = run.engine,
-                route = if (run.engine == "tool") "tier0" else "brain",
+                route = run.route,
                 totalMs = System.currentTimeMillis() - run.startedAt,
                 firstTokenMs = run.firstTokenMs,
                 loadMs = run.loadMs,
@@ -188,6 +190,71 @@ object ChatRunner {
 
     // ---------- Gemini ----------
 
+    /**
+     * B2: route only transient cloud failures to an already-installed local model. The selected
+     * provider is not changed, so the next user turn tries Gemini again automatically.
+     */
+    private suspend fun runGeminiWithFallback(
+        app: Context, run: Run, history: List<Message>, latest: Message
+    ): Message {
+        try {
+            val result = runGemini(app, run, history, latest)
+            ConvKpi.inc("degrade_l0_full")
+            return result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (!Store.automaticFallback) throw e
+            val level = if (e is GeminiClient.ApiError) {
+                FallbackPolicy.forHttpStatus(e.http)
+            } else {
+                FallbackPolicy.forNetworkError(e)
+            } ?: throw e
+
+            ConvKpi.inc("degrade_${level.key}")
+            val transition = FallbackPolicy.transitionLine(level)
+            run.route = "fallback-${level.key}"
+            if (!LocalLlm.loaded && !Modules.modelFile().isFile) {
+                ConvKpi.inc("fallback_unavailable")
+                run.detail = "Gemini -> ${level.label}; local model not installed"
+                val levelText = if (level == FallbackPolicy.Level.L2_OFFLINE) "L2 offline" else "L1 degraded"
+                return Message(
+                    id = run.messageId, role = Role.AI,
+                    text = "$transition\n\nQwen2.5 phone mein installed nahi hai, isliye fallback nahi ho saka. " +
+                        "Voice and AI mein model Download ya Import karo; agli turn par Gemini phir try hoga.",
+                    state = "error", engine = "gemini", note = "$levelText · fallback unavailable"
+                )
+            }
+
+            // Do not leave partial Gemini text beside the new local answer if the stream failed mid-turn.
+            run.text = ""
+            run.engine = "local"
+            run.label = transition
+            run.detail = "Gemini -> Qwen · ${level.label}"
+            postProgress(run)
+
+            return try {
+                val local = runLocal(app, run, history, latest)
+                ConvKpi.inc("fallback_success")
+                local.copy(
+                    text = FallbackPolicy.successLine(level) + "\n\n" + local.text,
+                    note = "Fallback ${level.label} · " + (local.note ?: "Qwen2.5")
+                )
+            } catch (fallbackError: CancellationException) {
+                throw fallbackError
+            } catch (fallbackError: Exception) {
+                ConvKpi.inc("fallback_failed")
+                val details = errorMessage(run, fallbackError).text
+                Message(
+                    id = run.messageId, role = Role.AI,
+                    text = "$transition\n\nQwen fallback bhi nahi chal saka: $details",
+                    state = "error", engine = "local",
+                    note = "Fallback ${level.label} · Qwen failed"
+                )
+            }
+        }
+    }
+
     private suspend fun runGemini(app: Context, run: Run, history: List<Message>, latest: Message): Message {
         val key = Store.geminiKey
             ?: throw ReplyError("Gemini API key set nahi hai. Voice and AI mein key daalo.")
@@ -205,9 +272,12 @@ object ChatRunner {
         val system = Prompts.system(run.viaVoice) + (if (useTools) "\n" + Prompts.TOOL_RULES else "")
         var lastPost = 0L
         val streamed = withContext(Dispatchers.IO) {
-            GeminiClient.streamWithTools(
+            GeminiClient.streamWithToolsTimeouts(
                 key, model, system, turns, Store.geminiTemp,
-                if (useTools) ToolSpecs.all else emptyList(), { run.cancelled }
+                if (useTools) ToolSpecs.all else emptyList(),
+                connectTimeoutMs = 10_000,
+                readTimeoutMs = if (Store.automaticFallback) 18_000 else 90_000,
+                isCancelled = { run.cancelled }
             ) { delta ->
                 if (run.firstTokenMs == 0L) run.firstTokenMs = System.currentTimeMillis() - run.startedAt
                 run.text = run.text + delta
@@ -282,7 +352,10 @@ object ChatRunner {
         if (run.viaVoice && Store.replyLength != "Long") maxTokens = minOf(maxTokens, 220)
         val budget = Prompts.budgetChars(Store.localContext, maxTokens)
         val payload = withContext(Dispatchers.IO) {
-            AttachmentText.read(app, latest.attachments, false, budget / 2)
+            AttachmentText.read(
+                app, latest.attachments, allowImages = false, maxChars = budget / 2,
+                ocrImages = Store.localScreenshotOcr
+            )
         }
         val system = Prompts.system(run.viaVoice)
         // Tools go into the prompt only for a short plain message that mentions a phone action (see ActionHint).

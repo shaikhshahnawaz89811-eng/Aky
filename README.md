@@ -85,7 +85,22 @@ on the device. AI replies are real: pick the on-device Qwen2.5 1.5B model or a G
 - **Policy gate** (`PolicyGate`): T0 runs, T1 runs with Undo, T2 (dial) waits for a **Haan** tap under the reply; nothing else runs.
 - **One merged reply** per turn (`ReplyComposer`); one Undo chip undoes every action of that reply; every action is in the activity log.
 - Attachments never get tools. Qwen gets tools only for short messages that mention a phone action (`ActionHint`); Gemini always.
-- Automatic Gemini <-> Qwen fallback is **B2**. See BUILD_NOTES.md for the honest status.
+- Automatic Gemini -> Qwen fallback and optional local screenshot OCR are in **B2**. See BUILD_NOTES.md for the honest status.
+
+## Qwen part B2: graceful cloud fallback + optional local OCR
+
+- When Gemini times out, has no route / DNS, hits a rate limit, or returns a server error, the current turn
+  can use an **already installed** Qwen model. Authentication, invalid-model, malformed-request, safety, and
+  user-cancel errors do not silently switch brains.
+- Fallback is enabled by default and can be turned off in **Settings > Voice and AI > Reliability and local reading**.
+  The selected provider stays Gemini, so the next turn tries Gemini again. The reply says which level was used.
+- Gemini uses bounded connect / read timeouts for this route; if it had already streamed partial text, that text is
+  cleared before Qwen starts so two answers are not merged. B1's attachment tool block and T2 confirmation remain in force.
+- Optional **Qwen attached-image OCR** uses the bundled ML Kit Latin recognizer on the phone. It is off by default,
+  works for readable Latin / English text (including code screenshots), and only adds recognized text to the local
+  Qwen prompt. Gemini's image path is unchanged; attachments still cannot invoke phone-action tools.
+- Settings > Activity and debug > **Debug: conversation KPIs** records successful Gemini L0 turns, L1 / L2 degradation,
+  Qwen fallback outcomes, and OCR successes / failures. These are on-device counts, not message contents.
 
 ## Network and privacy
 

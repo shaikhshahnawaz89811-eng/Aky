@@ -84,6 +84,16 @@ object Store {
         get() = prefs.getFloat("gemini_temp", 0.7f)
         set(v) = prefs.edit().putFloat("gemini_temp", v).apply()
 
+    /** Automatically use the installed local model for transient Gemini failures, for this turn only. */
+    var automaticFallback: Boolean
+        get() = prefs.getBoolean("automatic_fallback", true)
+        set(v) = prefs.edit().putBoolean("automatic_fallback", v).apply()
+
+    /** Opt-in, on-device Latin-script OCR for image attachments sent to Qwen. */
+    var localScreenshotOcr: Boolean
+        get() = prefs.getBoolean("local_screenshot_ocr", false)
+        set(v) = prefs.edit().putBoolean("local_screenshot_ocr", v).apply()
+
     /** Context window (tokens) of the on-device model. Qwen2.5 1.5B keeps its cache small, so 4096 is the default. */
     var localContext: Int
         get() = prefs.getInt("local_ctx", 4096)

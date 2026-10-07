@@ -167,6 +167,16 @@ object ConvKpi {
             sb.append("\nBattery: abhi koi saaf sample nahi. Screen band aur charger nikla hona chahiye; kuch phones battery ka charge counter hi nahi dete.\n")
         }
 
+        sb.append("\nGemini degrade / Qwen fallback\n")
+        sb.append("  L0 full Gemini: ").append(get("degrade_l0_full"))
+            .append(" · L1 timeout / busy: ").append(get("degrade_l1"))
+            .append(" · L2 no route / DNS: ").append(get("degrade_l2")).append("\n")
+        sb.append("  Qwen fallback: ").append(get("fallback_success")).append(" successful")
+            .append(" · ").append(get("fallback_unavailable")).append(" model unavailable")
+            .append(" · ").append(get("fallback_failed")).append(" Qwen errors\n")
+        sb.append("  Screenshot OCR (Qwen-only, opt-in): ").append(get("ocr_success"))
+            .append(" read · ").append(get("ocr_failed")).append(" unreadable / failed\n")
+
         sb.append("\nPhase 2 exit checklist\n")
         val listenHours = get("wake_listen_ms") / 3_600_000.0
         sb.append(check(trials >= 20, "Wake false reject naapa", "kam se kam 20 try chahiye (Wake test), abhi $trials")).append("\n")
