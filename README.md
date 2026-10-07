@@ -1,7 +1,7 @@
 # CodeAssistAI Android client
 
 Native Android client built with Kotlin and XML views. Chats, projects and settings are stored
-on the device. AI replies are real: pick the on-device Phi-4 mini model or a Gemini API key in
+on the device. AI replies are real: pick the on-device Qwen2.5 1.5B model or a Gemini API key in
 **Settings > Voice and AI**. If neither is set up, the app says so in the chat instead of faking a reply.
 
 ## Included
@@ -9,11 +9,12 @@ on the device. AI replies are real: pick the on-device Phi-4 mini model or a Gem
 - Home chat and searchable chat history with saved drafts; rename, pin, move, export, delete.
 - Edit, copy, share, select, delete, and **Regenerate** (last reply) message actions; image previews zoom.
 - Local projects with instructions and workspace files; a project chat gets its first reply on open.
-- Image, ZIP, and file attachments. Text/source files are sent to either brain, images to Gemini only.
-- **Brain**: Phi-4-mini-instruct Q4_K_M (~2.49 GB, llama.cpp through `dev.ffmpegkit-maintained:llama-android`)
-  or Gemini over HTTPS (streamed replies, model list read from the API).
-- **Phi-4 module card**: Download (Android DownloadManager) or Import file, GGUF header check,
-  Load / Unload / Delete with the rules enforced in code (no Delete while loaded, no second Load).
+- Image, ZIP, and file attachments. Text/source files are sent to either brain, images to Gemini only (Qwen2.5 1.5B is text-only).
+- **Brain**: Qwen2.5-1.5B-Instruct Q4_K_M (~986 MB, Apache-2.0, llama.cpp through `dev.ffmpegkit-maintained:llama-android`)
+  or Gemini over HTTPS (streamed replies, model list read from the API). Qwen replaces the old Phi-4 mini module.
+- **Qwen2.5 module card**: Download (Android DownloadManager) or Import file, GGUF header check (`qwen2` only),
+  Load / Unload / Delete with the rules enforced in code (no Delete while loaded, no second Load). If the old
+  Phi-4 file is still on the phone, Options offers to delete it (2.49 GB back).
 - **Gemini key card**: key stored encrypted with an Android Keystore AES-GCM key, Test key, model picker.
 - **Voice**: mic button inside the chat box, left of Send. Tap = tap-to-talk, hold = push-to-talk
   (slide left cancels, slide up locks to continuous), Continuous mode ("bas" ends it).
@@ -76,9 +77,19 @@ on the device. AI replies are real: pick the on-device Phi-4 mini model or a Gem
 - **KPI report** (Settings > Activity and debug > Debug: conversation KPIs) now ends with a **Phase 2 exit checklist** that says
   which numbers are measured and what is still missing (for example "8 ghante sunna chahiye, abhi 1.5").
 
+## Qwen part B1: tool calls behind a policy gate (audit PDF Sec 9.3, 9.6, 11)
+
+- **One plan format, two brains**: Gemini uses function calling, Qwen2.5 writes `<tool_call>` text that the app parses (`PlanParser`).
+  A broken call gets one repair retry, then a short question: never a guess.
+- **8 tools** (time, date, battery, torch, timer, alarm, open app, dial) reuse the Tier-0 code, so they do exactly what the fast path does.
+- **Policy gate** (`PolicyGate`): T0 runs, T1 runs with Undo, T2 (dial) waits for a **Haan** tap under the reply; nothing else runs.
+- **One merged reply** per turn (`ReplyComposer`); one Undo chip undoes every action of that reply; every action is in the activity log.
+- Attachments never get tools. Qwen gets tools only for short messages that mention a phone action (`ActionHint`); Gemini always.
+- Automatic Gemini <-> Qwen fallback is **B2**. See BUILD_NOTES.md for the honest status.
+
 ## Network and privacy
 
-- `INTERNET` is used only for Gemini and for downloading Phi-4 mini. Phi-4 mini inference is offline.
+- `INTERNET` is used only for Gemini and for downloading the Qwen2.5 model. Qwen2.5 inference is offline.
 - `RECORD_AUDIO` is requested the first time the mic is used. The app never records or stores audio;
   Android's speech service handles it (offline pack optional).
 - Android app backup is disabled.
@@ -90,7 +101,7 @@ on the device. AI replies are real: pick the on-device Phi-4 mini model or a Gem
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
-The AAR for llama.cpp ships `arm64-v8a` only, so use a 64-bit ARM phone (an x86 emulator cannot load Phi-4 mini).
+The AAR for llama.cpp ships `arm64-v8a` only, so use a 64-bit ARM phone (an x86 emulator cannot load the Qwen model).
 
 See `BUILD_NOTES.md` for what is verified and what still needs a device test.
 

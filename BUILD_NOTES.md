@@ -285,3 +285,124 @@ Library voices that are not in the account may not be usable on a free plan; onl
 - The Gemini persona is **not** told the voice gender, so Hindi verb forms in replies (karta / karti) stay as the model chooses.
   Making them follow the voice type is the persona setting from the audit (Phase 4).
 - `/v2/voices` and its `has_more` / `next_page_token` fields were taken from the ElevenLabs docs; not tested against a real account.
+
+
+---
+
+# Qwen2.5 1.5B replaces Phi-4 mini, part A of 2 (engine swap) — honest status
+
+**What was asked:** remove the Phi-4 module, put Qwen2.5-1.5B Q4_K_M (~986 MB) in its place, and make it do what the Gemini
+module can do. Audit PDF reference: Sec 9.3 lists the on-device LLM as Tier 2 ("offline / degraded mode: simple chat +
+tool calls, only capable devices, tell the user the limits"), and Sec 9.9 (L1 / L2) is where it is used when the network
+is slow or gone. Part A is the engine and the chat parity. Part B (below) is tool calls and the automatic fallback.
+
+Same situation as before: written and statically checked in a sandbox with **no Android SDK, no Kotlin compiler and no
+network**, so it has **never been compiled or run**. Send the CI compiler output if anything fails.
+
+| Part | Status |
+|---|---|
+| `ai/LocalLlm` (was `LocalPhi`): same Free-API calls, Qwen KV-cache memory check (28,672 bytes / token + 400 MB) | Written, needs device test |
+| `ai/ChatMl` (pure Kotlin): hand-built ChatML prompt, history budget, special-token stripping, reply cleanup | Written, JVM unit tests written (`ChatMlTest`), not run |
+| `ai/Modules`: Qwen file name / URL / size, 450 MB sanity floor, GGUF check accepts architecture `qwen2` only | Written, needs device test |
+| `Gguf` reader | Unchanged logic; `GgufTest` (JVM) builds synthetic headers, not run |
+| `Store`: `localContext` (default 4096), `localThreads`, `localTemp`, `localDownloadId`; provider values `local` / `gemini` | Written. Old `phi4` value reads as `local`; old Phi context / threads / temp keys are not carried over (new defaults) |
+| Settings > Voice and AI: Qwen card, "On-device · Qwen" switch, Options (context 2048 / 4096 / 6144 / 8192) | Written, needs device test |
+| Old Phi-4 leftovers: unfinished Phi download is cancelled at start; finished 2.49 GB file is kept until the user deletes it (Options) | Written, needs device test |
+
+## What Qwen can do like Gemini now, and what it cannot
+
+| Gemini in this app | Qwen2.5 1.5B on the phone |
+|---|---|
+| Chat with history, system prompt, reply length, voice-mode short answers | Yes (same `Prompts.system`, history folded into the prompt, 4096-token window by default) |
+| Text / source-file attachments | Yes, as many characters as the window allows (half of it) |
+| Tier-0 phone actions (time, torch, alarm ...) | Yes, they run before either brain |
+| Regenerate, Stop, spoken replies, KPI trace | Yes (Stop hides the reply; a running local reply still finishes in the background) |
+| Reads images | **No.** Text-only model. The app says so under the reply. |
+| Streams words as they are produced | **No.** The Free llama-android API returns the whole reply at once (streaming is Pro-only) |
+| Good Hinglish, long coding answers | **Weaker.** A 1.5B model; expect more mistakes than Gemini, especially in Roman Hindi |
+| Tool calls / plans | Part B |
+
+## Deliberate gaps and limits (read before testing)
+
+- **Chat template is hand-built** (ChatML) and `complete()` gets an empty system prompt, exactly as the Phi build did after it
+  produced raw continuations. The library wiki lists an "auto chat template" for the Free tier; if replies start with
+  a repeated "system" / "user" header, the library is adding a second template: tell me and the call changes to
+  `systemPrompt = system` with a plain prompt.
+- **Qwen answers are shorter on a 4096 window than on Gemini's.** A big attachment plus history is cut to fit; the app does not
+  tell you which part was cut (same as before).
+- Context 6144 / 8192 uses more RAM (about 0.2 GB more than 4096) and makes the first words slower: the whole prompt is read
+  before the first word, on the CPU.
+- Qwen2.5 sampling extras (top-p 0.8, top-k 20, repetition penalty 1.05, as the model card suggests) are not set: the Free API
+  config used here only takes context, threads and temperature.
+- The 986 MB size is the Hugging Face listing for `bartowski/Qwen2.5-1.5B-Instruct-GGUF` at the time of writing. The
+  Qwen2.5-Coder-1.5B-Instruct Q4_K_M file is the same size and also has architecture `qwen2`: it can be loaded through Import file.
+- Download link and file name were read from the Hugging Face page, not downloaded in the sandbox.
+
+## Part B is now split in two
+
+| | Scope (items of the old Part B list) | Status |
+|---|---|---|
+| **B1** (this zip) | 1. one plan format for both brains, JSON check, repair retry, question instead of a guess · 2. tools behind the risk-tier policy gate with ActivityLog / Undo, T2 tap-to-confirm | Written, never compiled |
+| **B2** (next) | 3. automatic fallback levels L0 / L1 / L2 (Gemini timeout or no internet -> Qwen with one honest line, and back) · 4. optional OCR so Qwen can read screenshots of code (needs a new dependency) · Settings switch + KPI lines for both | Not started |
+
+B2 needs B1 because the fallback has to hand the SAME plan format to whichever brain answers.
+
+---
+
+# Qwen2.5 tools, part B1 of 2 (plan format + policy gate) — honest status
+
+Same situation as before: written and statically checked in a sandbox with **no Android SDK, no Kotlin compiler and no
+network**, so it has **never been compiled or run**, and the new JVM tests have **not been run** (CI only runs
+`assembleDebug` / `assembleRelease`; run `./gradlew testDebugUnitTest` yourself). Send the CI compiler output if anything fails.
+
+## What it does
+
+You say "kal subah 8 baje ka alarm laga do aur battery batao" (words that are NOT an exact Tier-0 phrase). The brain proposes tool
+calls, the app checks and runs them, and you get ONE merged reply.
+
+| Piece | Where | Status |
+|---|---|---|
+| Tool table: 8 tools (`time_now`, `date_today`, `battery_level`, `torch_set`, `timer_set`, `alarm_set`, `app_open`, `call_dial`), argument rules, tiers | `ai/ToolSpecs`, `ai/PlanTypes` | Written, JVM tests written |
+| Qwen: tools go into the ChatML system text in Qwen's own `<tools>` / `<tool_call>` format; the app parses the reply | `ai/ChatMl` (`withTools`, `appendTurn`), `ai/PlanParser` | Written, JVM tests written |
+| Qwen: broken tool call -> ONE repair retry (the error is sent back) -> still broken -> short question, never a guess | `ai/ChatRunner.runLocal` | Written, needs device test |
+| Gemini: tools sent as function declarations (mode AUTO), `functionCall` parts read from the stream | `ai/GeminiClient.streamWithTools` | Written, **not tested against the real API** |
+| Policy gate: T0 run, T1 run + Undo, T2 readback + tap, anything else refused. Tier comes from the table, never from the model | `ai/PolicyGate` | Written, JVM tests written |
+| T2 (`call_dial`): reply says "Dialer mein NUMBER khol dun?" and a **Haan / Nahi** button row appears under it; Haan opens the dialer (you still press Call). A pending confirm older than 10 minutes is refused | `ai/PlanExecutor.confirm`, `chat/MessagesAdapter`, `item_msg_ai.xml`, `HomeFragment` | Written, needs device test |
+| Tools reuse the Tier-0 code (`Tier0.runAlarm`, `runTorch`, ...): same Clock-app intents, same Undo tokens | `ai/Tier0` (refactor), `ai/ToolRunner` | Written, needs device test |
+| One merged reply: read-only answers first, then actions, then errors, then a pending question | `ai/ReplyComposer` | Written, JVM tests written |
+| Activity log + Undo: one reply can hold several undo ids; the single Undo chip undoes all of them | `ai/ActivityLog` (comma list), `Message.undoId` | Written, needs device test |
+
+## Safety rules that are in the code
+
+- **Attachments = no tools.** Text from an attached file is untrusted (audit Sec 11.3, prompt injection), so a message with an
+  attachment never gets tools. Tier-0 already worked this way.
+- **Tool arguments are checked in code** (ranges, number format, at most 4 calls per turn) before anything runs.
+- **A T2 action never runs without the tap.** Voice "haan" is not accepted (audit: voice alone is not a valid confirmation without
+  speaker verification). The spoken reply therefore ends with "...neeche Haan dabao.", not with a question mark.
+- Failed actions (no flash, app not found, Clock app missing) are shown but are **not** written to the activity log and get no Undo.
+
+## Deliberate gaps and limits (read before testing)
+
+- **Qwen only gets tools when the message looks like a phone action** (`ActionHint`: short, no code, an action word like alarm / timer /
+  torch / battery / time / call / open / kholo). Reason: the tool block is ~2.2k characters (~700 tokens of the 4096 window) and a
+  1.5B model calls tools by mistake. Gemini always gets the tools. A phone request without those words goes to Qwen as plain chat.
+- **With tools on, use the 4096 context** (Options). At 2048 almost nothing is left for history.
+- **A 1.5B model will often get tool calls wrong** (wrong hour, 12-hour value in `hour`, invented number). The code catches
+  malformed calls, not wrong-but-valid ones. T1 actions say what they did ("Alarm 08:00 AM (kal) ke liye set kar diya") and have Undo.
+- **No confidence axis yet.** The audit matrix (risk x confidence) is not implemented: the gate only looks at the tier, so it
+  asks more, never less. STT word confidences are not available from Android SpeechRecognizer in this app.
+- **No repair retry for Gemini.** Its calls are schema-shaped; a refused call (for example hour 25) becomes the short question.
+- **The model's own words around tool calls are dropped** ("Theek hai, abhi karta hoon"): the reply is built from the real results.
+- **`ambiguities[]` from the audit's plan format is not a field.** AM / PM is handled by the model giving a 24-hour `hour` and by the
+  readback in the result line; the system prompt tells the model to ask ONE question when something is missing.
+- **Tasks run one after another on the main thread** (like Tier-0), not in parallel; there is no DAG, priority class or pause / resume
+  yet (audit Phase 3).
+- **Only one T2 action per turn**; a second one gets "Ek baar mein ek hi cheez confirm kar sakta hoon".
+- Gemini function declarations use the proto type names (`OBJECT`, `STRING`, `INTEGER`, `BOOLEAN`); written from the API docs, not run.
+- The `Message` class got two new nullable fields (`actions`, `pending`); chats saved by older builds load fine (they are `null`).
+
+## Part B2 (next)
+
+3. Degrade levels (audit Sec 9.9): Gemini timeout / no internet switches that turn to Qwen with one honest line, and back; the level
+   is shown and counted in the KPI screen.
+4. Optional: OCR so Qwen can use screenshots of code (needs a new dependency).

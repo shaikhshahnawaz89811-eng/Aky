@@ -21,6 +21,12 @@ object GeminiClient {
     class Image(val mime: String, val bytes: ByteArray)
     class Turn(val role: String, val text: String, val images: List<Image> = emptyList())
 
+    /** One function call the model asked for; argument values are kept as plain strings. */
+    class FnCall(val name: String, val args: Map<String, String>)
+
+    /** A finished reply: the text it wrote and the function calls it made (either can be empty). */
+    class Streamed(val text: String, val calls: List<FnCall>)
+
     private val excluded = listOf(
         "embedding", "tts", "live", "audio", "image", "imagen", "veo",
         "robotics", "computer-use", "aqa"
@@ -90,7 +96,22 @@ object GeminiClient {
         temperature: Float,
         isCancelled: () -> Boolean,
         onDelta: (String) -> Unit
-    ): String {
+    ): String = streamWithTools(key, model, system, turns, temperature, emptyList(), isCancelled, onDelta).text
+
+    /**
+     * Same as [stream], but also sends [tools] as Gemini function declarations (mode AUTO) and collects the
+     * functionCall parts of the answer. An answer with only function calls and no text is a valid answer.
+     */
+    fun streamWithTools(
+        key: String,
+        model: String,
+        system: String,
+        turns: List<Turn>,
+        temperature: Float,
+        tools: List<ToolSpec>,
+        isCancelled: () -> Boolean,
+        onDelta: (String) -> Unit
+    ): Streamed {
         if (!model.matches(Regex("[A-Za-z0-9._-]+"))) throw ApiError(0, "Gemini model ka naam galat hai.")
 
         val body = JSONObject()
@@ -120,9 +141,17 @@ object GeminiClient {
         }
         body.put("contents", contents)
         body.put("generationConfig", JSONObject().put("temperature", temperature.toDouble()))
+        if (tools.isNotEmpty()) {
+            body.put("tools", toolsJson(tools))
+            body.put(
+                "toolConfig",
+                JSONObject().put("functionCallingConfig", JSONObject().put("mode", "AUTO"))
+            )
+        }
 
         val conn = open("$BASE/models/$model:streamGenerateContent?alt=sse", "POST", key)
         val out = StringBuilder()
+        val calls = ArrayList<FnCall>()
         var blocked: String? = null
         var finishReason = ""
         try {
@@ -150,6 +179,21 @@ object GeminiClient {
                         for (i in 0 until parts.length()) {
                             val p = parts.getJSONObject(i)
                             if (p.optBoolean("thought", false)) continue
+                            val fc = p.optJSONObject("functionCall")
+                            if (fc != null) {
+                                val fname = fc.optString("name", "")
+                                val argsObj = fc.optJSONObject("args")
+                                val args = LinkedHashMap<String, String>()
+                                if (argsObj != null) {
+                                    val keys = argsObj.keys()
+                                    while (keys.hasNext()) {
+                                        val k = keys.next()
+                                        if (!argsObj.isNull(k)) args[k] = argsObj.get(k).toString()
+                                    }
+                                }
+                                if (fname.isNotBlank()) calls.add(FnCall(fname, args))
+                                continue
+                            }
                             val text = p.optString("text", "")
                             if (text.isNotEmpty()) {
                                 out.append(text)
@@ -165,7 +209,7 @@ object GeminiClient {
             conn.disconnect()
         }
 
-        if (out.isEmpty() && !isCancelled()) {
+        if (out.isEmpty() && calls.isEmpty() && !isCancelled()) {
             val b = blocked
             if (b != null) throw ApiError(0, "Gemini ne ye request block kar di ($b).")
             if (finishReason == "SAFETY" || finishReason == "PROHIBITED_CONTENT") {
@@ -173,7 +217,31 @@ object GeminiClient {
             }
             throw ApiError(0, "Gemini ne khaali reply di. Dobara try karo.")
         }
-        return out.toString()
+        return Streamed(out.toString(), calls)
+    }
+
+    /** Gemini function declarations built from the tool table. Types are the proto enum names (OBJECT, STRING ...). */
+    private fun toolsJson(tools: List<ToolSpec>): JSONArray {
+        val decls = JSONArray()
+        for (s in tools) {
+            val d = JSONObject().put("name", s.name).put("description", s.desc)
+            if (s.params.isNotEmpty()) {
+                val props = JSONObject()
+                val required = JSONArray()
+                for (p in s.params) {
+                    props.put(
+                        p.name,
+                        JSONObject().put("type", p.type.uppercase()).put("description", p.desc)
+                    )
+                    if (p.required) required.put(p.name)
+                }
+                val params = JSONObject().put("type", "OBJECT").put("properties", props)
+                if (required.length() > 0) params.put("required", required)
+                d.put("parameters", params)
+            }
+            decls.put(d)
+        }
+        return JSONArray().put(JSONObject().put("functionDeclarations", decls))
     }
 
     private fun open(url: String, method: String, key: String): HttpURLConnection {

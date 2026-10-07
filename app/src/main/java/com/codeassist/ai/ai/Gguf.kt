@@ -10,7 +10,7 @@ import java.nio.ByteOrder
 /**
  * Minimal GGUF header reader. It only walks the metadata key/value table far enough to find
  * `general.architecture` and `general.name`, so an import can be rejected in milliseconds
- * (before copying 2.5 GB) when the picked file is not a Phi-family GGUF model.
+ * (before copying the whole file) when the picked file is not the expected GGUF model.
  */
 object Gguf {
     class Info(val version: Int, val architecture: String?, val name: String?)

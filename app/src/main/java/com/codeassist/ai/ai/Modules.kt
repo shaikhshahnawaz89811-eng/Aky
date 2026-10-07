@@ -26,25 +26,32 @@ import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Single source of truth for the Phi-4 mini module card.
+ * Single source of truth for the on-device model card (Qwen2.5 1.5B Instruct, GGUF Q4_K_M).
  *
  *   NOT_IMPORTED --Download/Import--> DOWNLOADING/IMPORTING --> UNLOADED --Load--> LOADING --> LOADED
  *   LOADED --Unload--> UNLOADED --Delete--> NOT_IMPORTED
  *
  * The rules live here, not in the buttons: Delete is refused while loaded/loading/busy, a second
  * Load is a no-op, and Delete always returns the card to NOT_IMPORTED.
+ *
+ * The Phi-4 mini module was removed. If its old 2.49 GB file is still on the phone, [legacyPhiBytes]
+ * reports it and [deleteLegacyPhi] frees the space (the user decides; nothing is deleted silently).
  */
 object Modules {
-    const val PHI_TITLE = "Phi-4 mini instruct"
-    const val PHI_QUANT = "Q4_K_M"
-    const val PHI_SIZE_LABEL = "2.49 GB"
-    const val PHI_URL =
-        "https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/" +
-            "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
-    private const val PHI_FILE = "phi4-mini-instruct-q4_k_m.gguf"
-    private const val PHI_PART = "phi4-mini-instruct-q4_k_m.gguf.part"
-    private const val PHI_BYTES_ESTIMATE = 2_500_000_000L
-    private const val MIN_VALID_BYTES = 500L * 1024 * 1024
+    const val MODEL_TITLE = "Qwen2.5 1.5B Instruct"
+    const val MODEL_QUANT = "Q4_K_M"
+    const val MODEL_SIZE_LABEL = "986 MB"
+    const val MODEL_URL =
+        "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/" +
+            "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+    private const val MODEL_FILE = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    private const val MODEL_PART = "qwen2.5-1.5b-instruct-q4_k_m.gguf.part"
+    private const val MODEL_BYTES_ESTIMATE = 1_100_000_000L
+    private const val MIN_VALID_BYTES = 450L * 1024 * 1024
+
+    // files of the removed Phi-4 mini module
+    private const val LEGACY_PHI_FILE = "phi4-mini-instruct-q4_k_m.gguf"
+    private const val LEGACY_PHI_PART = "phi4-mini-instruct-q4_k_m.gguf.part"
 
     enum class Phase { NOT_IMPORTED, DOWNLOADING, IMPORTING, UNLOADED, LOADING, LOADED, ERROR }
 
@@ -86,21 +93,50 @@ object Modules {
         initialised = true
         app = context.applicationContext
         Store.init(app)
+        dropLegacyPhiDownload()
         val ready = modelFile()
         if (ready.exists() && ready.length() >= MIN_VALID_BYTES) {
-            val p = if (LocalPhi.loaded) Phase.LOADED else Phase.UNLOADED
+            val p = if (LocalLlm.loaded) Phase.LOADED else Phase.UNLOADED
             setPhase(p, ready.length(), ready.length(), null)
             return
         }
-        val id = Store.phiDownloadId
+        val id = Store.localDownloadId
         if (id >= 0 && downloadExists(id)) {
             setPhase(Phase.DOWNLOADING, 0, 0, "Download chal raha hai…")
             pollDownload(id)
         } else {
-            Store.phiDownloadId = -1
-            File(modelsDir(), PHI_PART).delete()
+            Store.localDownloadId = -1
+            File(modelsDir(), MODEL_PART).delete()
             setPhase(Phase.NOT_IMPORTED)
         }
+    }
+
+    /** An unfinished Phi-4 download is useless now: cancel it and remove its partial file. */
+    private fun dropLegacyPhiDownload() {
+        val old = Store.legacyPhiDownloadId
+        if (old >= 0) {
+            try {
+                (app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).remove(old)
+            } catch (_: Exception) {
+                // already gone
+            }
+            Store.legacyPhiDownloadId = -1
+        }
+        File(modelsDir(), LEGACY_PHI_PART).delete()
+    }
+
+    /** Size of the old Phi-4 mini file if it is still on the phone, else 0. */
+    fun legacyPhiBytes(): Long {
+        val f = File(modelsDir(), LEGACY_PHI_FILE)
+        return if (f.exists()) f.length() else 0L
+    }
+
+    /** Deletes the old Phi-4 mini file. Returns true if it is gone afterwards. */
+    fun deleteLegacyPhi(): Boolean {
+        val f = File(modelsDir(), LEGACY_PHI_FILE)
+        val ok = !f.exists() || f.delete()
+        notifyChanged()
+        return ok
     }
 
     // ---------- files ----------
@@ -111,7 +147,7 @@ object Modules {
         return dir
     }
 
-    fun modelFile(): File = File(modelsDir(), PHI_FILE)
+    fun modelFile(): File = File(modelsDir(), MODEL_FILE)
 
     fun fmt(bytes: Long): String =
         if (bytes >= 1_000_000_000L) String.format(Locale.US, "%.2f GB", bytes / 1e9)
@@ -154,17 +190,17 @@ object Modules {
         if (phase != Phase.NOT_IMPORTED && phase != Phase.ERROR) return
         setPhase(Phase.IMPORTING, 0, 0, "File check ho rahi hai…")
         job = scope.launch {
-            val part = File(modelsDir(), PHI_PART)
+            val part = File(modelsDir(), MODEL_PART)
             try {
                 val resolver = app.contentResolver
                 val size = querySize(uri)
-                // 1) reject a wrong file in milliseconds, before copying 2.5 GB
+                // 1) reject a wrong file in milliseconds, before copying the whole file
                 resolver.openInputStream(uri)?.use { checkHeader(it) }
                     ?: throw IOException("File khul nahi payi.")
                 if (size in 1 until MIN_VALID_BYTES) {
-                    throw IOException("File bahut chhoti hai (" + fmt(size) + "). Poori Phi-4 mini .gguf file chuno.")
+                    throw IOException("File bahut chhoti hai (" + fmt(size) + "). Poori Qwen2.5 1.5B .gguf file chuno.")
                 }
-                val need = if (size > 0) size else PHI_BYTES_ESTIMATE
+                val need = if (size > 0) size else MODEL_BYTES_ESTIMATE
                 if (freeBytes(modelsDir()) < need + 150L * 1024 * 1024) {
                     throw IOException("Storage kam hai: " + fmt(need) + " khaali jagah chahiye.")
                 }
@@ -215,10 +251,12 @@ object Modules {
     private fun checkHeader(input: InputStream) {
         val info = Gguf.readInfo(input)
         val arch = info.architecture ?: throw IOException("GGUF mein architecture nahi mili.")
-        if (!arch.startsWith("phi")) {
+        // Qwen2.5 Instruct and Qwen2.5-Coder are both "qwen2". "qwen2vl" is the picture model (needs an extra
+        // projector file) and "qwen3" has a different chat style: neither is accepted here.
+        if (arch != "qwen2") {
             throw IOException(
-                "Ye Phi-4 mini file nahi lagti (architecture: " + arch +
-                    "). Phi-4-mini-instruct Q4_K_M .gguf file chuno."
+                "Ye Qwen2.5 file nahi lagti (architecture: " + arch +
+                    "). Qwen2.5-1.5B-Instruct Q4_K_M .gguf file chuno."
             )
         }
     }
@@ -242,22 +280,22 @@ object Modules {
     fun startDownload(allowMobileData: Boolean) {
         if (phase != Phase.NOT_IMPORTED && phase != Phase.ERROR) return
         val dir = modelsDir()
-        if (freeBytes(dir) < PHI_BYTES_ESTIMATE + 150L * 1024 * 1024) {
-            setPhase(Phase.ERROR, 0, 0, "Storage kam hai: " + fmt(PHI_BYTES_ESTIMATE) + " khaali jagah chahiye.")
+        if (freeBytes(dir) < MODEL_BYTES_ESTIMATE + 150L * 1024 * 1024) {
+            setPhase(Phase.ERROR, 0, 0, "Storage kam hai: " + fmt(MODEL_BYTES_ESTIMATE) + " khaali jagah chahiye.")
             return
         }
-        File(dir, PHI_PART).delete()
+        File(dir, MODEL_PART).delete()
         try {
             val dm = app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val request = DownloadManager.Request(Uri.parse(PHI_URL))
-                .setTitle("$PHI_TITLE ($PHI_QUANT)")
+            val request = DownloadManager.Request(Uri.parse(MODEL_URL))
+                .setTitle("$MODEL_TITLE ($MODEL_QUANT)")
                 .setDescription("CodeAssistAI on-device model")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
                 .setAllowedOverMetered(allowMobileData)
                 .setAllowedOverRoaming(false)
-                .setDestinationInExternalFilesDir(app, "models", PHI_PART)
+                .setDestinationInExternalFilesDir(app, "models", MODEL_PART)
             val id = dm.enqueue(request)
-            Store.phiDownloadId = id
+            Store.localDownloadId = id
             setPhase(Phase.DOWNLOADING, 0, 0, "Download shuru ho raha hai…")
             pollDownload(id)
         } catch (e: Exception) {
@@ -295,16 +333,16 @@ object Modules {
                     }
                 }
                 if (!exists) {
-                    Store.phiDownloadId = -1
-                    File(modelsDir(), PHI_PART).delete()
+                    Store.localDownloadId = -1
+                    File(modelsDir(), MODEL_PART).delete()
                     setPhase(Phase.NOT_IMPORTED)
                     return@launch
                 }
                 when (status) {
                     DownloadManager.STATUS_SUCCESSFUL -> {
-                        Store.phiDownloadId = -1
+                        Store.localDownloadId = -1
                         setPhase(Phase.IMPORTING, soFar, totalBytes, "File check ho rahi hai…")
-                        val part = File(modelsDir(), PHI_PART)
+                        val part = File(modelsDir(), MODEL_PART)
                         try {
                             install(part)
                         } catch (e: Exception) {
@@ -314,8 +352,8 @@ object Modules {
                         return@launch
                     }
                     DownloadManager.STATUS_FAILED -> {
-                        Store.phiDownloadId = -1
-                        File(modelsDir(), PHI_PART).delete()
+                        Store.localDownloadId = -1
+                        File(modelsDir(), MODEL_PART).delete()
                         setPhase(
                             Phase.ERROR, 0, 0,
                             "Download fail hua (code $reason). Internet aur storage check karke dobara try karo."
@@ -349,7 +387,7 @@ object Modules {
         when (phase) {
             Phase.DOWNLOADING -> {
                 job?.cancel()
-                val id = Store.phiDownloadId
+                val id = Store.localDownloadId
                 if (id >= 0) {
                     try {
                         (app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).remove(id)
@@ -357,8 +395,8 @@ object Modules {
                         // already gone
                     }
                 }
-                Store.phiDownloadId = -1
-                File(modelsDir(), PHI_PART).delete()
+                Store.localDownloadId = -1
+                File(modelsDir(), MODEL_PART).delete()
                 setPhase(Phase.NOT_IMPORTED)
             }
             Phase.IMPORTING -> job?.cancel() // the import job resets the phase itself
@@ -372,21 +410,21 @@ object Modules {
     suspend fun ensureLoaded() {
         loadGate.withLock {
             val file = modelFile()
-            if (LocalPhi.loaded) {
+            if (LocalLlm.loaded) {
                 if (phase != Phase.LOADED) setPhase(Phase.LOADED, file.length(), file.length(), null)
                 return
             }
             if (!file.exists()) {
-                throw LocalPhi.LoadFailure("Phi-4 mini import nahi hui. Voice and AI mein Download ya Import karo.")
+                throw LocalLlm.LoadFailure("Qwen2.5 model import nahi hua. Voice and AI mein Download ya Import karo.")
             }
             setPhase(Phase.LOADING, file.length(), file.length(), "Model RAM mein load ho raha hai…")
             try {
-                LocalPhi.load(app, file, Store.phiContext, Store.phiThreads, Store.phiTemp)
+                LocalLlm.load(app, file, Store.localContext, Store.localThreads, Store.localTemp)
                 setPhase(Phase.LOADED, file.length(), file.length(), null)
             } catch (e: CancellationException) {
                 setPhase(Phase.UNLOADED, file.length(), file.length(), null)
                 throw e
-            } catch (e: LocalPhi.LoadFailure) {
+            } catch (e: LocalLlm.LoadFailure) {
                 setPhase(Phase.UNLOADED, file.length(), file.length(), e.message)
                 throw e
             }
@@ -408,9 +446,9 @@ object Modules {
     /** Returns an error text if the action is refused, null if it started. */
     fun requestUnload(): String? {
         if (phase != Phase.LOADED) return "Model abhi loaded nahi hai."
-        if (ChatRunner.isRunning() || LocalPhi.busy) return "Reply chal raha hai. Pehle Stop karo."
+        if (ChatRunner.isRunning() || LocalLlm.busy) return "Reply chal raha hai. Pehle Stop karo."
         scope.launch {
-            LocalPhi.unload()
+            LocalLlm.unload()
             val f = modelFile()
             setPhase(Phase.UNLOADED, f.length(), f.length(), null)
         }
@@ -424,7 +462,7 @@ object Modules {
         scope.launch {
             val f = modelFile()
             val ok = !f.exists() || f.delete()
-            File(modelsDir(), PHI_PART).delete()
+            File(modelsDir(), MODEL_PART).delete()
             if (ok) setPhase(Phase.NOT_IMPORTED) else setPhase(Phase.ERROR, 0, 0, "File delete nahi ho payi.")
         }
         return null

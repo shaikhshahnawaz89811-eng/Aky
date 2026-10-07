@@ -64,8 +64,8 @@ class SettingsFragment : Fragment() {
                 (activity as? com.codeassist.ai.MainActivity)?.openVoiceAi()
             }
             noteRow(
-                "Phi-4 mini phone par hi chalta hai. Internet sirf tab use hota hai jab aap Gemini " +
-                    "chunte ho ya Phi-4 mini download karte ho."
+                "Qwen2.5 1.5B phone par hi chalta hai. Internet sirf tab use hota hai jab aap Gemini " +
+                    "chunte ho ya Qwen2.5 model download karte ho."
             )
         }
 

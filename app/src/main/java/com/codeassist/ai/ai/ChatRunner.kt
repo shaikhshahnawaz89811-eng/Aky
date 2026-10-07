@@ -39,6 +39,8 @@ object ChatRunner {
         @Volatile var loadMs: Long = 0L
         @Volatile var tokens: Int = 0
         @Volatile var tps: Float = 0f
+        /** Short note for the trace: which tools the brain called, or why a plan was refused. */
+        @Volatile var detail: String = ""
         var job: Job? = null
     }
 
@@ -161,7 +163,7 @@ object ChatRunner {
                 tokens = run.tokens,
                 tokPerSec = run.tps,
                 status = status,
-                detail = if (status == "error") (msg?.text ?: "").take(90) else ""
+                detail = if (status == "error") (msg?.text ?: "").take(90) else run.detail
             )
         )
     }
@@ -197,10 +199,16 @@ object ChatRunner {
             AttachmentText.read(app, latest.attachments, true, 60_000)
         }
         val turns = Prompts.geminiTurns(history, latest, payload)
-        val system = Prompts.system(run.viaVoice)
+        // Tools only for a plain message: text from an attached file is untrusted and must never trigger an action
+        // (audit Sec 11.3, prompt injection).
+        val useTools = latest.attachments.isEmpty()
+        val system = Prompts.system(run.viaVoice) + (if (useTools) "\n" + Prompts.TOOL_RULES else "")
         var lastPost = 0L
-        val full = withContext(Dispatchers.IO) {
-            GeminiClient.stream(key, model, system, turns, Store.geminiTemp, { run.cancelled }) { delta ->
+        val streamed = withContext(Dispatchers.IO) {
+            GeminiClient.streamWithTools(
+                key, model, system, turns, Store.geminiTemp,
+                if (useTools) ToolSpecs.all else emptyList(), { run.cancelled }
+            ) { delta ->
                 if (run.firstTokenMs == 0L) run.firstTokenMs = System.currentTimeMillis() - run.startedAt
                 run.text = run.text + delta
                 val now = System.currentTimeMillis()
@@ -210,56 +218,137 @@ object ChatRunner {
                 }
             }
         }
+        if (streamed.calls.isNotEmpty()) {
+            val tasks = streamed.calls.mapIndexed { i, c -> PlanTask("t" + (i + 1), c.name, c.args) }
+            return planMessage(app, run, "gemini", "Gemini · $model", streamed.text, tasks, payload.skipped)
+        }
         return Message(
-            id = run.messageId, role = Role.AI, text = full.trim(), engine = "gemini",
+            id = run.messageId, role = Role.AI, text = streamed.text.trim(), engine = "gemini",
             note = noteWith("Gemini · $model", payload.skipped)
         )
     }
 
-    // ---------- Phi-4 mini (on device) ----------
+    private const val CLARIFY =
+        "Samajh nahi paya ki phone par kya karna hai. Ek baar saaf bolo, jaise: \"kal subah 8 baje ka alarm laga do\"."
+
+    /** Checks the plan, runs it behind the policy gate and turns the result into one reply message. */
+    private fun planMessage(
+        app: Context, run: Run, engine: String, caption: String, ack: String,
+        tasks: List<PlanTask>, skipped: List<String>
+    ): Message {
+        val problem = ToolSpecs.check(tasks)
+        if (problem != null) {
+            run.detail = "plan refused: " + problem
+            return Message(
+                id = run.messageId, role = Role.AI, text = CLARIFY, engine = engine,
+                note = noteWith(caption, skipped)
+            )
+        }
+        run.label = "Phone action chal raha hai"
+        postProgress(run)
+        val out = PlanExecutor.run(app, ack, tasks)
+        run.detail = "tools: " + tasks.joinToString(",") { it.tool }
+        val undo: String? = if (out.undoIds.isEmpty()) null else out.undoIds.joinToString(",")
+        return Message(
+            id = run.messageId, role = Role.AI, text = out.text, engine = engine,
+            note = noteWith(caption + " · tools", skipped),
+            undoId = undo, actions = out.chip, pending = out.pendingJson
+        )
+    }
+
+    // ---------- Qwen2.5 1.5B (on device) ----------
 
     private suspend fun runLocal(app: Context, run: Run, history: List<Message>, latest: Message): Message {
         when (Modules.phase) {
             Modules.Phase.NOT_IMPORTED, Modules.Phase.ERROR, Modules.Phase.DOWNLOADING, Modules.Phase.IMPORTING ->
-                throw ReplyError("Phi-4 mini abhi taiyaar nahi hai. Voice and AI mein Download ya Import karo, ya Gemini chuno.")
+                throw ReplyError("Qwen2.5 abhi taiyaar nahi hai. Voice and AI mein Download ya Import karo, ya Gemini chuno.")
             else -> Unit
         }
-        if (!LocalPhi.loaded) {
+        if (!LocalLlm.loaded) {
             run.label = "Model RAM mein load ho raha hai"
             postProgress(run)
             val loadStart = System.currentTimeMillis()
             Modules.ensureLoaded()
             run.loadMs = System.currentTimeMillis() - loadStart
         }
-        if (LocalPhi.busy) {
+        if (LocalLlm.busy) {
             run.label = "Pichla reply khatam ho raha hai"
             postProgress(run)
         }
-        run.label = "Phi-4 soch raha hai"
+        run.label = "Qwen soch raha hai"
         postProgress(run)
 
         var maxTokens = Prompts.maxTokensLocal(Store.replyLength)
         if (run.viaVoice && Store.replyLength != "Long") maxTokens = minOf(maxTokens, 220)
-        val budget = Prompts.budgetChars(Store.phiContext, maxTokens)
+        val budget = Prompts.budgetChars(Store.localContext, maxTokens)
         val payload = withContext(Dispatchers.IO) {
             AttachmentText.read(app, latest.attachments, false, budget / 2)
         }
         val system = Prompts.system(run.viaVoice)
-        val prompt = Prompts.buildPhiChat(
-            system, history, Prompts.combineLatest(latest.text, payload.text), budget - system.length
-        )
+        // Tools go into the prompt only for a short plain message that mentions a phone action (see ActionHint).
+        val wantTools = latest.attachments.isEmpty() && ActionHint.looksLikeAction(latest.text)
+        val prompt = if (wantTools) {
+            ChatMl.build(
+                ChatMl.withTools(system, Prompts.TOOL_RULES, ToolSpecs.qwenToolsBlock()),
+                history, Prompts.combineLatest(latest.text, payload.text), budget
+            )
+        } else {
+            ChatMl.build(
+                system, history, Prompts.combineLatest(latest.text, payload.text), budget - system.length
+            )
+        }
         // system prompt is already inside [prompt]; pass "" so the library does not add a second one
-        val reply = LocalPhi.generate("", prompt, maxTokens)
+        var reply = LocalLlm.generate("", prompt, maxTokens)
         if (reply.text.isBlank()) {
             throw ReplyError("Model ne khaali reply di. Dobara try karo ya Reply length badlao.")
         }
-        run.tokens = reply.tokens
+        var tokens = reply.tokens
+        var millis = reply.millis
+
+        var outcome: Message? = null
+        if (wantTools) {
+            val first = PlanParser.parse(reply.text)
+            var parsed: PlanParser.Parsed = first
+            if (first is PlanParser.Parsed.Invalid) {
+                // audit Sec 9.3: one repair retry, then a question, never a guess
+                run.label = "Tool call theek kar raha hoon"
+                postProgress(run)
+                val note = "Your tool call was not valid: " + first.reason +
+                    ". Reply again with correct <tool_call> blocks, or answer in plain text."
+                reply = LocalLlm.generate("", ChatMl.appendTurn(prompt, reply.text, note), maxTokens)
+                tokens += reply.tokens
+                millis += reply.millis
+                parsed = PlanParser.parse(reply.text)
+            }
+            val speedNow = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
+            val caption = "Qwen2.5 1.5B · $speedNow tok/s · ${millis / 1000}s"
+            when (parsed) {
+                is PlanParser.Parsed.Calls ->
+                    outcome = planMessage(app, run, "local", caption, parsed.ack, parsed.tasks, payload.skipped)
+                is PlanParser.Parsed.Invalid -> {
+                    run.detail = "plan refused twice: " + parsed.reason
+                    outcome = Message(
+                        id = run.messageId, role = Role.AI, text = CLARIFY, engine = "local",
+                        note = noteWith(caption, payload.skipped)
+                    )
+                }
+                is PlanParser.Parsed.Text -> Unit
+            }
+        }
+        run.tokens = tokens
         run.tps = reply.tokensPerSecond
+        if (outcome != null) return outcome
+
+        val plain = if (wantTools) PlanParser.parse(reply.text) else null
+        val shown = if (plain is PlanParser.Parsed.Text) plain.text else reply.text
+        if (shown.isBlank()) {
+            throw ReplyError("Model ne khaali reply di. Dobara try karo ya Reply length badlao.")
+        }
         val speed = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
-        val secs = reply.millis / 1000
+        val secs = millis / 1000
         return Message(
-            id = run.messageId, role = Role.AI, text = reply.text, engine = "phi4",
-            note = noteWith("Phi-4 mini · $speed tok/s · ${secs}s", payload.skipped)
+            id = run.messageId, role = Role.AI, text = shown, engine = "local",
+            note = noteWith("Qwen2.5 1.5B · $speed tok/s · ${secs}s", payload.skipped)
         )
     }
 
@@ -269,7 +358,7 @@ object ChatRunner {
     private fun errorMessage(run: Run, e: Throwable): Message {
         val text: String = when (e) {
             is ReplyError -> e.message ?: "Reply nahi ban paya."
-            is LocalPhi.LoadFailure -> e.message ?: "Model load nahi hua."
+            is LocalLlm.LoadFailure -> e.message ?: "Model load nahi hua."
             is GeminiClient.ApiError -> e.message ?: "Gemini error."
             is UnknownHostException -> "Internet nahi mil raha. Connection check karo."
             is SocketTimeoutException -> "Gemini ka jawab time par nahi aaya. Dobara try karo."

@@ -24,15 +24,19 @@ data class Message(
     val time: Long = System.currentTimeMillis(),
     /** null = normal, "thinking" = reply in progress (never persisted), "error" = failed reply. */
     val state: String? = null,
-    /** Small caption under AI replies ("Phi-4 mini · 8.1 tok/s") or the live phase while thinking. */
+    /** Small caption under AI replies ("Qwen2.5 1.5B · 8.1 tok/s") or the live phase while thinking. */
     val note: String? = null,
-    /** "phi4" or "gemini" for AI replies. */
+    /** "local" (on-device Qwen), "gemini" or "tool" for AI replies; older chats may hold "phi4". */
     val engine: String? = null,
     /** True when the user message was spoken (shows the voice caption). */
     val viaVoice: Boolean = false,
     val voiceMs: Long = 0L,
     /** Id of the ActivityLog entry when this reply is a phone action that can be undone. */
-    val undoId: String? = null
+    val undoId: String? = null,
+    /** Short chip text when the brain ran phone tools in this reply (for example "Alarm · Torch"). */
+    val actions: String? = null,
+    /** JSON of a PendingAction: a T2 tool waiting for the user's "Haan" tap. Null once answered. */
+    val pending: String? = null
 )
 
 data class ChatMeta(

@@ -48,10 +48,13 @@ object Store {
         set(v) = prefs.edit().putString("active_draft", v).apply()
 
     // ---------- Brain (LLM) ----------
-    /** "phi4" = on-device Phi-4 mini, "gemini" = Gemini API. */
+    /** "local" = on-device Qwen2.5 1.5B, "gemini" = Gemini API. (Older builds stored "phi4": read as "local".) */
     var brainProvider: String
-        get() = prefs.getString("brain_provider", "phi4") ?: "phi4"
-        set(v) = prefs.edit().putString("brain_provider", v).apply()
+        get() {
+            val v = prefs.getString("brain_provider", "local") ?: "local"
+            return if (v == "gemini") "gemini" else "local"
+        }
+        set(v) = prefs.edit().putString("brain_provider", if (v == "gemini") "gemini" else "local").apply()
 
     /** Gemini API key, stored encrypted with an Android Keystore AES-GCM key. */
     var geminiKey: String?
@@ -81,21 +84,30 @@ object Store {
         get() = prefs.getFloat("gemini_temp", 0.7f)
         set(v) = prefs.edit().putFloat("gemini_temp", v).apply()
 
-    var phiContext: Int
-        get() = prefs.getInt("phi_ctx", 2048)
-        set(v) = prefs.edit().putInt("phi_ctx", v).apply()
+    /** Context window (tokens) of the on-device model. Qwen2.5 1.5B keeps its cache small, so 4096 is the default. */
+    var localContext: Int
+        get() = prefs.getInt("local_ctx", 4096)
+        set(v) = prefs.edit().putInt("local_ctx", v).apply()
 
-    var phiThreads: Int
-        get() = prefs.getInt("phi_threads", (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 6))
-        set(v) = prefs.edit().putInt("phi_threads", v).apply()
+    var localThreads: Int
+        get() = prefs.getInt("local_threads", (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 6))
+        set(v) = prefs.edit().putInt("local_threads", v).apply()
 
-    var phiTemp: Float
-        get() = prefs.getFloat("phi_temp", 0.7f)
-        set(v) = prefs.edit().putFloat("phi_temp", v).apply()
+    var localTemp: Float
+        get() = prefs.getFloat("local_temp", 0.7f)
+        set(v) = prefs.edit().putFloat("local_temp", v).apply()
 
-    var phiDownloadId: Long
+    var localDownloadId: Long
+        get() = prefs.getLong("local_download_id", -1L)
+        set(v) = prefs.edit().putLong("local_download_id", v).apply()
+
+    /** Download id left behind by the removed Phi-4 module; read once so the download can be cancelled. */
+    var legacyPhiDownloadId: Long
         get() = prefs.getLong("phi_download_id", -1L)
-        set(v) = prefs.edit().putLong("phi_download_id", v).apply()
+        set(v) {
+            if (v < 0) prefs.edit().remove("phi_download_id").apply()
+            else prefs.edit().putLong("phi_download_id", v).apply()
+        }
 
     /** "Short" | "Balanced" | "Long" */
     var replyLength: String

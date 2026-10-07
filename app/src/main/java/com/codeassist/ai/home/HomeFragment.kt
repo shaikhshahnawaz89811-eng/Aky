@@ -36,6 +36,7 @@ import com.codeassist.ai.ai.ActivityLog
 import com.codeassist.ai.ai.BrainStatus
 import com.codeassist.ai.ai.ChatRunner
 import com.codeassist.ai.ai.Modules
+import com.codeassist.ai.ai.PlanExecutor
 import com.codeassist.ai.chat.MessagesAdapter
 import com.codeassist.ai.data.Attachment
 import com.codeassist.ai.data.ChatMeta
@@ -151,6 +152,18 @@ class HomeFragment : Fragment() {
             if (id != null && ctx != null) {
                 Toast.makeText(ctx, ActivityLog.undo(ctx, id), Toast.LENGTH_LONG).show()
                 adapter.refresh()
+            }
+        }
+        adapter.onConfirm = { m, yes ->
+            val ctx = context
+            val c = chat
+            if (ctx != null && c != null) {
+                val updated = PlanExecutor.confirm(ctx, c.id, m.id, yes)
+                if (updated != null) {
+                    val idx = messages.indexOfFirst { it.id == updated.id }
+                    if (idx >= 0) messages[idx] = updated
+                    adapter.update(updated)
+                }
             }
         }
         messageList.adapter = adapter

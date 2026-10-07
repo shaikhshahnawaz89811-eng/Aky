@@ -25,7 +25,14 @@ object Tier0 {
      * [tier] is the risk tier from the audit (T0 read-only, T1 reversible on-device, T2 affects others).
      * [undo] is a token understood by [ActivityLog.undo], or null when the action cannot be undone.
      */
-    class Result(val title: String, val reply: String, val tier: String = "T0", val undo: String? = null)
+    class Result(
+        val title: String,
+        val reply: String,
+        val tier: String = "T0",
+        val undo: String? = null,
+        /** false when nothing happened (error, missing app, needs more input): not logged, not counted as an action. */
+        val ok: Boolean = true
+    )
 
     private const val B = "(?<![\\p{L}\\p{N}])"
     private const val E = "(?![\\p{L}\\p{N}])"
@@ -84,6 +91,10 @@ object Tier0 {
 
     private fun time(t: String): Result? {
         if (!timePhrases.matches(t)) return null
+        return runTime()
+    }
+
+    fun runTime(): Result {
         val hm = SimpleDateFormat("hh:mm a", Locale.ENGLISH).format(Date())
         return Result("Time", "Abhi $hm hua hai.")
     }
@@ -95,6 +106,10 @@ object Tier0 {
 
     private fun date(t: String): Result? {
         if (!datePhrases.matches(t)) return null
+        return runDate()
+    }
+
+    fun runDate(): Result {
         val d = SimpleDateFormat("d MMMM yyyy, EEEE", Locale.ENGLISH).format(Date())
         return Result("Date", "Aaj $d hai.")
     }
@@ -106,9 +121,13 @@ object Tier0 {
 
     private fun battery(ctx: Context, t: String): Result? {
         if (!batteryPhrases.matches(t)) return null
+        return runBattery(ctx)
+    }
+
+    fun runBattery(ctx: Context): Result {
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        if (level < 0 || level > 100) return Result("Battery", "Battery level abhi padh nahi paya.")
+        if (level < 0 || level > 100) return Result("Battery", "Battery level abhi padh nahi paya.", ok = false)
         val sticky = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val status = sticky?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
@@ -128,18 +147,22 @@ object Tier0 {
         val on = words.any { it in onWords }
         val off = words.any { it in offWords }
         if (on == off) return null
+        return runTorch(ctx, on)
+    }
+
+    fun runTorch(ctx: Context, on: Boolean): Result {
         return try {
             val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val id = cm.cameraIdList.firstOrNull {
                 cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-            } ?: return Result("Torch", "Is phone mein flash / torch nahi mila.")
+            } ?: return Result("Torch", "Is phone mein flash / torch nahi mila.", ok = false)
             cm.setTorchMode(id, on)
             Result(
                 "Torch", if (on) "Torch on kar di." else "Torch off kar di.",
                 "T1", if (on) "torch:off" else "torch:on"
             )
         } catch (e: Exception) {
-            Result("Torch", "Torch control nahi ho paya: " + (e.message ?: e.javaClass.simpleName))
+            Result("Torch", "Torch control nahi ho paya: " + (e.message ?: e.javaClass.simpleName), ok = false)
         }
     }
 
@@ -174,6 +197,13 @@ object Tier0 {
             else -> n * 60
         }
         if (seconds <= 0 || seconds > 24 * 3600) return null
+        return runTimer(ctx, seconds)
+    }
+
+    fun runTimer(ctx: Context, seconds: Int): Result {
+        if (seconds <= 0 || seconds > 24 * 3600) {
+            return Result("Timer", "Timer 1 second se 24 ghante ke beech hona chahiye.", ok = false)
+        }
         val intent = Intent(AlarmClock.ACTION_SET_TIMER)
             .putExtra(AlarmClock.EXTRA_LENGTH, seconds)
             .putExtra(AlarmClock.EXTRA_MESSAGE, "CodeAssist timer")
@@ -271,7 +301,12 @@ object Tier0 {
             }
         }
         h %= 24
+        return runAlarm(ctx, h, m, t.contains("kal") || t.contains("tomorrow"))
+    }
 
+    /** [h] is already 24-hour. [saidTomorrow] only guards the Clock app's "next occurrence" rule below. */
+    fun runAlarm(ctx: Context, h: Int, m: Int, saidTomorrow: Boolean): Result {
+        val now = Calendar.getInstance()
         val shown = SimpleDateFormat("hh:mm a", Locale.ENGLISH).format(
             (now.clone() as Calendar).apply {
                 set(Calendar.HOUR_OF_DAY, h)
@@ -286,12 +321,12 @@ object Tier0 {
             set(Calendar.MILLISECOND, 0)
         }
         val ringsToday = todayTarget.after(now)
-        val saidTomorrow = t.contains("kal") || t.contains("tomorrow")
         if (saidTomorrow && ringsToday) {
             return Result(
                 "Alarm",
                 "Clock app agla $shown hi set karta hai, aur wo aaj hi aa raha hai. " +
-                    "Kal ke liye ye alarm aaj raat bol dena."
+                    "Kal ke liye ye alarm aaj raat bol dena.",
+                ok = false
             )
         }
         // unique label per time, so Undo can dismiss exactly this alarm (see ActivityLog.undo)
@@ -320,6 +355,10 @@ object Tier0 {
         val m = dialRegex.find(t) ?: return null
         val number = (m.groupValues[2].ifEmpty { m.groupValues[3] }).replace(" ", "")
         if (number.length < 6) return null
+        return runDial(ctx, number)
+    }
+
+    fun runDial(ctx: Context, number: String): Result {
         return launch(
             ctx, Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")), "Call",
             "Dialer mein $number khol diya. Call aap khud dabayenge.",
@@ -337,7 +376,17 @@ object Tier0 {
         var name = openPrefix.find(t)?.groupValues?.get(2) ?: openSuffix.find(t)?.groupValues?.get(1) ?: return null
         name = name.replace(Regex("^(the |app )+"), "").replace(Regex("( app| ko| please)+$"), "").trim()
         if (name.length < 2) return null
+        return openByName(ctx, name)
+    }
 
+    /** Structured entry (brain tool call): an unknown app name is an answer, not "let the brain handle it". */
+    fun runOpenApp(ctx: Context, rawName: String): Result {
+        val name = normalize(rawName)
+        if (name.length < 2) return Result("Open app", "App ka naam samajh nahi aaya.", ok = false)
+        return openByName(ctx, name) ?: Result("Open app", "\"" + rawName.trim() + "\" naam ka app nahi mila.", ok = false)
+    }
+
+    private fun openByName(ctx: Context, name: String): Result? {
         val pm = ctx.packageManager
         val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val apps = pm.queryIntentActivities(query, 0)
@@ -352,11 +401,11 @@ object Tier0 {
         if (matches.isEmpty()) return null // not an app request: let the brain answer
         if (matches.size > 1) {
             val names = matches.take(4).joinToString(", ") { it.label }
-            return Result("Open app", "Kaun sa app? $names. Poora naam bolo.")
+            return Result("Open app", "Kaun sa app? $names. Poora naam bolo.", ok = false)
         }
         val app = matches[0]
         val launchIntent = pm.getLaunchIntentForPackage(app.pkg)
-            ?: return Result("Open app", app.label + " abhi khul nahi sakta.")
+            ?: return Result("Open app", app.label + " abhi khul nahi sakta.", ok = false)
         return launch(ctx, launchIntent, "Open app", app.label + " khol diya.", app.label + " nahi khula.", "T0", null)
     }
 
@@ -369,11 +418,11 @@ object Tier0 {
             ctx.startActivity(intent)
             Result(title, ok, tier, undo)
         } catch (_: ActivityNotFoundException) {
-            Result(title, missing)
+            Result(title, missing, ok = false)
         } catch (e: SecurityException) {
-            Result(title, "Permission nahi mili: " + (e.message ?: ""))
+            Result(title, "Permission nahi mili: " + (e.message ?: ""), ok = false)
         } catch (e: Exception) {
-            Result(title, "Ho nahi paya: " + (e.message ?: e.javaClass.simpleName))
+            Result(title, "Ho nahi paya: " + (e.message ?: e.javaClass.simpleName), ok = false)
         }
     }
 }

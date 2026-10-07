@@ -12,7 +12,7 @@ import java.io.InputStreamReader
 /**
  * Turns picked attachments into something a model can actually use:
  *  - text / source files  -> inlined as text (both brains)
- *  - images               -> JPEG bytes for Gemini only (Phi-4 mini is text-only)
+ *  - images               -> JPEG bytes for Gemini only (Qwen2.5 1.5B is text-only)
  *  - ZIP / PDF / binaries -> reported as skipped, never silently dropped
  */
 object AttachmentText {
@@ -34,7 +34,7 @@ object AttachmentText {
             when {
                 a.kind == AttachKind.IMAGE -> {
                     if (!allowImages) {
-                        skipped.add(a.name + " (image: Phi-4 mini sirf text padhta hai, Gemini chuno)")
+                        skipped.add(a.name + " (image: Qwen2.5 sirf text padhta hai, tasveer ke liye Gemini chuno)")
                     } else {
                         val img = loadImage(ctx, a)
                         if (img != null) images.add(img) else skipped.add(a.name + " (image khul nahi payi)")

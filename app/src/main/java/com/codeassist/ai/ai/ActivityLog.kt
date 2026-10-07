@@ -67,8 +67,12 @@ object ActivityLog {
     @Synchronized
     fun get(id: String): Entry? = items.firstOrNull { it.id == id }
 
+    /** [id] may hold several entry ids separated by commas (one reply that ran several undoable tools). */
     @Synchronized
-    fun isUndone(id: String): Boolean = get(id)?.undone == true
+    fun isUndone(id: String): Boolean {
+        val parts = id.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        return parts.isNotEmpty() && parts.all { get(it)?.undone == true }
+    }
 
     @Synchronized
     fun clear() {
@@ -96,8 +100,20 @@ object ActivityLog {
         }
     }
 
-    /** Runs the undo for entry [id] and returns a one-line message for the user. */
+    /** Runs the undo for entry [id] (or for each id of a comma list) and returns the message(s) for the user. */
     fun undo(ctx: Context, id: String): String {
+        if (id.contains(',')) {
+            val out = ArrayList<String>()
+            for (p in id.split(',')) {
+                val one = p.trim()
+                if (one.isNotEmpty()) out.add(undoOne(ctx, one))
+            }
+            return out.joinToString("\n")
+        }
+        return undoOne(ctx, id)
+    }
+
+    private fun undoOne(ctx: Context, id: String): String {
         val e = get(id) ?: return "Ye action log mein nahi mili."
         val token = e.undo ?: return "Is action ko wapas nahi kiya ja sakta."
         if (e.undone) return "Ye pehle hi wapas ho chuka hai."

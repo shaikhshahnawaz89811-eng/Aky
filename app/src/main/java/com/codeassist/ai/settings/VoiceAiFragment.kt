@@ -35,7 +35,7 @@ import com.codeassist.ai.R
 import com.codeassist.ai.ai.ConvKpi
 import com.codeassist.ai.ai.ElevenLabsClient
 import com.codeassist.ai.ai.GeminiClient
-import com.codeassist.ai.ai.LocalPhi
+import com.codeassist.ai.ai.LocalLlm
 import com.codeassist.ai.ai.Modules
 import com.codeassist.ai.data.Store
 import com.codeassist.ai.service.AssistantService
@@ -56,7 +56,7 @@ import java.net.UnknownHostException
 import java.util.Locale
 
 /**
- * Voice and AI: brain selection, the Phi-4 mini module card (download / import / load / unload /
+ * Voice and AI: brain selection, the Qwen2.5 1.5B module card (download / import / load / unload /
  * delete), the Gemini key card, and the real options behind each card.
  */
 class VoiceAiFragment : Fragment() {
@@ -101,7 +101,7 @@ class VoiceAiFragment : Fragment() {
     private var activeCard: LinearLayout? = null
     private var uiScope: CoroutineScope? = null
     private var voice: VoiceController? = null
-    private var phiCard: Card? = null
+    private var localCard: Card? = null
     private var geminiCard: Card? = null
     private var elevenCard: Card? = null
     private var testingEleven = false
@@ -117,7 +117,7 @@ class VoiceAiFragment : Fragment() {
     private lateinit var wakePermissions: ActivityResultLauncher<Array<String>>
     private var wakeSwitch: SwitchCompat? = null
     private var settingWakeSwitch = false
-    private val moduleListener: () -> Unit = { renderPhi(); renderBrain() }
+    private val moduleListener: () -> Unit = { renderLocal(); renderBrain() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -157,7 +157,7 @@ class VoiceAiFragment : Fragment() {
         uiScope = null
         voice?.destroy()
         voice = null
-        phiCard = null
+        localCard = null
         geminiCard = null
         elevenCard = null
         voiceValue = null
@@ -175,7 +175,7 @@ class VoiceAiFragment : Fragment() {
         container.removeAllViews()
         section("Brain", first = true)
         card { brainSelector() }
-        phiCard = newCard()
+        localCard = newCard()
         geminiCard = newCard()
 
         section("Conversation")
@@ -311,7 +311,7 @@ class VoiceAiFragment : Fragment() {
         section("Privacy")
         card {
             noteRow(
-                "Phi-4 mini: aapka text sirf is phone par process hota hai.\n\n" +
+                "Qwen2.5 (on-device): aapka text sirf is phone par process hota hai.\n\n" +
                     "Gemini: aapka text (aur bheji gayi image / text file) Google ko jaata hai. " +
                     "API key sirf is phone par Android Keystore se encrypted rehti hai.\n\n" +
                     "ElevenLabs voice (ON ho toh): jo reply bolna hai wo text ElevenLabs ko jaata hai. Key sirf is phone par encrypted rehti hai, " +
@@ -325,7 +325,7 @@ class VoiceAiFragment : Fragment() {
 
     private fun render() {
         renderBrain()
-        renderPhi()
+        renderLocal()
         renderGemini()
         renderEleven()
     }
@@ -348,7 +348,7 @@ class VoiceAiFragment : Fragment() {
             setBackgroundResource(R.drawable.seg_track)
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
-        val local = segment("On-device · Phi-4") { setProvider("phi4") }
+        val local = segment("On-device · Qwen") { setProvider("local") }
         val cloud = segment("Cloud · Gemini") { setProvider("gemini") }
         seg.addView(local, LinearLayout.LayoutParams(0, dp(40), 1f))
         seg.addView(cloud, LinearLayout.LayoutParams(0, dp(40), 1f))
@@ -389,7 +389,7 @@ class VoiceAiFragment : Fragment() {
         styleSegment(segLocal, local)
         styleSegment(segGemini, !local)
         brainHint?.text = if (local) {
-            "Offline aur private: text phone se bahar nahi jaata. Jawab CPU par bante hain, isliye thode dheere aate hain."
+            "Offline aur private: text phone se bahar nahi jaata. Chhota 1.5B model hai: jawab CPU par bante hain (dheere), tasveer nahi padhta, aur Hinglish / lambi coding mein Gemini jitna pakka nahi."
         } else {
             "Tez aur zyada smart, par internet chahiye aur aapka text (aur bheji gayi image / text file) Google ko jaata hai."
         }
@@ -417,13 +417,13 @@ class VoiceAiFragment : Fragment() {
         return Card(root)
     }
 
-    private fun renderPhi() {
-        val c = phiCard ?: return
+    private fun renderLocal() {
+        val c = localCard ?: return
         if (view == null) return
         val phase = Modules.phase
         c.icon.setImageResource(R.drawable.ic_sparkle)
-        c.title.text = Modules.PHI_TITLE
-        c.sub.text = Modules.PHI_QUANT + " · " + Modules.PHI_SIZE_LABEL + " · phone par hi chalta hai"
+        c.title.text = Modules.MODEL_TITLE
+        c.sub.text = Modules.MODEL_QUANT + " · " + Modules.MODEL_SIZE_LABEL + " · phone par hi chalta hai"
 
         when (phase) {
             Modules.Phase.NOT_IMPORTED -> setBadge(c.badge, "Not imported", GREY)
@@ -440,7 +440,7 @@ class VoiceAiFragment : Fragment() {
             val file = Modules.modelFile()
             c.detail.visibility = View.VISIBLE
             c.detail.text = file.name + "\n" + Modules.fmt(file.length()) + " · " +
-                "context " + Store.phiContext + " · " + Store.phiThreads + " threads"
+                "context " + Store.localContext + " · " + Store.localThreads + " threads"
         } else {
             c.detail.visibility = View.GONE
         }
@@ -463,18 +463,24 @@ class VoiceAiFragment : Fragment() {
         }
 
         val msg = Modules.message
-        if (msg.isNullOrBlank()) {
-            c.message.visibility = View.GONE
-        } else {
+        val oldPhi = Modules.legacyPhiBytes()
+        if (!msg.isNullOrBlank()) {
             c.message.visibility = View.VISIBLE
             c.message.text = msg
             c.message.setTextColor(if (phase == Modules.Phase.ERROR) RED else GREY)
+        } else if (oldPhi > 0L) {
+            c.message.visibility = View.VISIBLE
+            c.message.text = "Purani Phi-4 file (" + Modules.fmt(oldPhi) + ") phone mein padi hai, ab kaam nahi aati. " +
+                "Options mein se delete karke jagah khaali karo."
+            c.message.setTextColor(GREY)
+        } else {
+            c.message.visibility = View.GONE
         }
 
-        val options = Btn("Options", GHOST) { showPhiOptions() }
+        val options = Btn("Options", GHOST) { showLocalOptions() }
         val specs: List<Btn> = when (phase) {
             Modules.Phase.NOT_IMPORTED, Modules.Phase.ERROR -> listOf(
-                Btn("Download " + Modules.PHI_SIZE_LABEL, PRIMARY) { confirmDownload() },
+                Btn("Download " + Modules.MODEL_SIZE_LABEL, PRIMARY) { confirmDownload() },
                 Btn("Import file", GHOST) { pickModel.launch(arrayOf("*/*")) },
                 options
             )
@@ -502,11 +508,11 @@ class VoiceAiFragment : Fragment() {
     private fun confirmDownload() {
         val metered = Modules.isMetered()
         val builder = AlertDialog.Builder(requireContext())
-            .setTitle("Phi-4 mini download")
+            .setTitle("Qwen2.5 1.5B download")
             .setMessage(
-                "Hugging Face se " + Modules.PHI_SIZE_LABEL + " ki file aayegi (bartowski GGUF, MIT licence). " +
+                "Hugging Face se " + Modules.MODEL_SIZE_LABEL + " ki file aayegi (bartowski GGUF, Apache-2.0 licence). " +
                     "Android ka download manager ise chalayega: app band ho jaye tab bhi chalta rahega.\n\n" +
-                    (if (metered) "Abhi mobile data par ho, " + Modules.PHI_SIZE_LABEL + " kharch hoga."
+                    (if (metered) "Abhi mobile data par ho, " + Modules.MODEL_SIZE_LABEL + " kharch hoga."
                     else "Abhi Wi-Fi par ho, theek hai.")
             )
             .setNegativeButton("Cancel", null)
@@ -521,7 +527,7 @@ class VoiceAiFragment : Fragment() {
 
     private fun confirmDelete() {
         AlertDialog.Builder(requireContext())
-            .setTitle("Phi-4 mini delete karein?")
+            .setTitle("Qwen2.5 1.5B delete karein?")
             .setMessage("Model file phone se hat jayegi. Dobara chahiye toh download ya import karna hoga.")
             .setPositiveButton("Delete") { _, _ -> Modules.requestDelete()?.let { toast(it) } }
             .setNegativeButton("Cancel", null)
@@ -924,50 +930,68 @@ class VoiceAiFragment : Fragment() {
             .show()
     }
 
-    // ---------- Phi options ----------
+    // ---------- Qwen options ----------
 
-    private fun showPhiOptions() {
-        val items = listOf(
-            "Context size · " + Store.phiContext,
-            "CPU threads · " + Store.phiThreads,
-            "Temperature · " + fmtF(Store.phiTemp),
-            "Reply length · " + Store.replyLength,
-            "System prompt · edit"
-        )
+    private fun showLocalOptions() {
+        val items = ArrayList<String>()
+        items.add("Context size · " + Store.localContext)
+        items.add("CPU threads · " + Store.localThreads)
+        items.add("Temperature · " + fmtF(Store.localTemp))
+        items.add("Reply length · " + Store.replyLength)
+        items.add("System prompt · edit")
+        val oldPhi = Modules.legacyPhiBytes()
+        if (oldPhi > 0L) items.add("Purani Phi-4 file delete · " + Modules.fmt(oldPhi))
         AlertDialog.Builder(requireContext())
-            .setTitle("Phi-4 mini options")
+            .setTitle("Qwen2.5 1.5B options")
             .setItems(items.toTypedArray()) { _, which ->
                 when (which) {
-                    0 -> choose("Context size (tokens)", listOf("1024", "2048", "3072", "4096"), Store.phiContext.toString()) {
-                        Store.phiContext = it.toInt()
+                    0 -> choose("Context size (tokens)", listOf("2048", "4096", "6144", "8192"), Store.localContext.toString()) {
+                        Store.localContext = it.toInt()
                         needsReload()
                     }
-                    1 -> choose("CPU threads", listOf("2", "3", "4", "5", "6", "8"), Store.phiThreads.toString()) {
-                        Store.phiThreads = it.toInt()
+                    1 -> choose("CPU threads", listOf("2", "3", "4", "5", "6", "8"), Store.localThreads.toString()) {
+                        Store.localThreads = it.toInt()
                         needsReload()
                     }
-                    2 -> choose("Temperature", listOf("0.2", "0.5", "0.7", "1.0"), fmtF(Store.phiTemp)) {
-                        Store.phiTemp = it.toFloat()
+                    2 -> choose("Temperature", listOf("0.2", "0.5", "0.7", "1.0"), fmtF(Store.localTemp)) {
+                        Store.localTemp = it.toFloat()
                         needsReload()
                     }
                     3 -> choose("Reply length", listOf("Short", "Balanced", "Long"), Store.replyLength) {
                         Store.replyLength = it
-                        showPhiOptions()
+                        showLocalOptions()
                     }
-                    4 -> editSystemPrompt { showPhiOptions() }
+                    4 -> editSystemPrompt { showLocalOptions() }
+                    5 -> confirmDeleteOldPhi()
                 }
             }
             .setNegativeButton("Done", null)
             .show()
     }
 
+    private fun confirmDeleteOldPhi() {
+        val bytes = Modules.legacyPhiBytes()
+        AlertDialog.Builder(requireContext())
+            .setTitle("Purani Phi-4 file delete karein?")
+            .setMessage(
+                "Phi-4 mini ab app mein nahi hai. Is file se " + Modules.fmt(bytes) +
+                    " jagah khaali hogi. Wapas chahiye toh dobara download karni padegi."
+            )
+            .setPositiveButton("Delete") { _, _ ->
+                if (!Modules.deleteLegacyPhi()) toast("File delete nahi ho payi.")
+                renderLocal()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     /** Context size, threads and temperature are baked in when the model is loaded. */
     private fun needsReload() {
-        if (LocalPhi.loaded) {
+        if (LocalLlm.loaded) {
             toast("Ye agle Load par apply hoga. Pehle Unload, phir Load karo.")
         }
-        renderPhi()
-        showPhiOptions()
+        renderLocal()
+        showLocalOptions()
     }
 
     // ---------- shared dialogs ----------

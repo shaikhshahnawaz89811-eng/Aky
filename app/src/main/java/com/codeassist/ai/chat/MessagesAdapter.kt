@@ -37,6 +37,8 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     var onImageClick: ((Attachment) -> Unit)? = null
     var onFileClick: ((Attachment) -> Unit)? = null
     var onUndo: ((Message) -> Unit)? = null
+    /** (message, true = Haan / false = Nahi) for a pending T2 phone action. */
+    var onConfirm: ((Message, Boolean) -> Unit)? = null
 
     init {
         setHasStableIds(true)
@@ -99,7 +101,7 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         val message = items[position]
         when (holder) {
             is UserVH -> holder.bind(message, onImageClick, onFileClick)
-            is AiVH -> holder.bind(message, onUndo)
+            is AiVH -> holder.bind(message, onUndo, onConfirm)
         }
         val textView = holder.itemView.findViewById<TextView>(R.id.textMsg)
         messageViews[message.id] = textView
@@ -230,17 +232,23 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private val taskRow: View = view.findViewById(R.id.taskRow)
         private val taskText: TextView = view.findViewById(R.id.textTask)
         private val undo: TextView = view.findViewById(R.id.textUndo)
+        private val confirmRow: View = view.findViewById(R.id.confirmRow)
+        private val confirmYes: TextView = view.findViewById(R.id.btnConfirmYes)
+        private val confirmNo: TextView = view.findViewById(R.id.btnConfirmNo)
         private var pulse: ObjectAnimator? = null
 
-        fun bind(message: Message, onUndo: ((Message) -> Unit)?) {
+        fun bind(message: Message, onUndo: ((Message) -> Unit)?, onConfirm: ((Message, Boolean) -> Unit)?) {
             val busy = message.state == "thinking"
             val error = message.state == "error"
             val waiting = busy && message.text.isBlank()
 
-            taskRow.visibility = if (message.engine == "tool") View.VISIBLE else View.GONE
-            taskText.text = "Phone action · " + (message.note ?: "")
+            // a phone action is either a Tier-0 reply (engine "tool") or a brain reply that ran tools (actions chip)
+            val isTool = message.engine == "tool"
+            val hasChip = isTool || !message.actions.isNullOrBlank()
+            taskRow.visibility = if (hasChip) View.VISIBLE else View.GONE
+            taskText.text = "Phone action · " + (if (isTool) (message.note ?: "") else (message.actions ?: ""))
             val undoId = message.undoId
-            if (message.engine != "tool" || undoId == null) {
+            if (!hasChip || undoId == null) {
                 undo.visibility = View.GONE
                 undo.setOnClickListener(null)
             } else {
@@ -255,6 +263,16 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
                     undo.setTextColor(ContextCompat.getColor(undo.context, R.color.accent))
                     undo.setOnClickListener { onUndo?.invoke(message) }
                 }
+            }
+
+            val pendingConfirm = !message.pending.isNullOrBlank() && !busy && !error
+            confirmRow.visibility = if (pendingConfirm) View.VISIBLE else View.GONE
+            if (pendingConfirm) {
+                confirmYes.setOnClickListener { onConfirm?.invoke(message, true) }
+                confirmNo.setOnClickListener { onConfirm?.invoke(message, false) }
+            } else {
+                confirmYes.setOnClickListener(null)
+                confirmNo.setOnClickListener(null)
             }
 
             if (waiting) {
@@ -277,7 +295,7 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
             val caption: String? = when {
                 busy -> null
                 error -> "Dobara try karne ke liye is message par dabake rakho, phir Regenerate."
-                message.engine == "tool" -> null
+                isTool -> null
                 else -> message.note
             }
             note.visibility = if (caption.isNullOrBlank()) View.GONE else View.VISIBLE
