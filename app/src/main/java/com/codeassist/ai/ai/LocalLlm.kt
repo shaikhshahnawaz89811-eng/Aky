@@ -2,9 +2,16 @@ package com.codeassist.ai.ai
 
 import android.app.ActivityManager
 import android.content.Context
-import dev.ffmpegkit.llama.Llama
-import dev.ffmpegkit.llama.LlamaConfig
-import dev.ffmpegkit.llama.LlamaModel
+import com.codeassist.ai.data.Message
+import com.codeassist.ai.data.Role
+import com.codeassist.ai.data.Store
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -12,101 +19,166 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import com.google.ai.edge.litertlm.Message as LmMessage
 
 /**
- * On-device Qwen2.5 1.5B Instruct (GGUF) through the llama-android AAR (llama.cpp, CPU/NEON).
+ * On-device Gemma 4 E2B (.litertlm) through Google's LiteRT-LM runtime (Kotlin API, GPU first, CPU fallback).
  *
- * Free-API facts that shape this class (from the library docs):
- *  - one LlamaModel is NOT thread-safe, so every call is serialised with [lock];
- *  - complete() is single-turn and returns the whole reply at once (no token streaming; streaming,
- *    grammar-constrained JSON, vision and function calling are Pro-only), so conversation history is
- *    folded into the prompt by [ChatMl.build];
- *  - sampling (temperature, top-p, top-k) is fixed when the model is loaded.
+ * What changed against the old Qwen/llama.cpp build:
+ *  - the runtime applies the model's own chat template, so the hand-built ChatML text, the "which prompt shape works"
+ *    test and the reply-repair code are no longer needed for chat;
+ *  - replies stream token by token;
+ *  - the model takes images directly (vision backend), no OCR detour;
+ *  - history is passed as real user/model messages ([ConversationConfig.initialMessages]) on every turn. A fresh
+ *    conversation per turn keeps this stateless, like before; the runtime's prefill is fast enough for that.
+ *
+ * One engine is not used from two places at once: every call is serialised with [lock].
  */
 object LocalLlm {
     class LoadFailure(message: String) : Exception(message)
-    /** [capped] = the model ran into maxTokens instead of stopping by itself. */
+
+    /** [capped] is kept for old callers; tokens are estimated from the text length (the runtime does not report them). */
     class Reply(val text: String, val tokens: Int, val tokensPerSecond: Float, val millis: Long, val capped: Boolean = false)
 
     private val lock = Mutex()
-    private var model: LlamaModel? = null
+    private var engine: Engine? = null
 
     @Volatile
     var loaded: Boolean = false
         private set
 
-    /** True while a native completion is running; it cannot be interrupted, only waited for. */
+    /** True while a reply is being produced. */
     @Volatile
     var busy: Boolean = false
         private set
 
-    suspend fun load(ctx: Context, file: File, contextSize: Int, threads: Int, temperature: Float) {
+    /** "gpu" or "cpu": what the loaded engine really runs on (shown in the reply caption). */
+    @Volatile
+    var backendName: String = ""
+        private set
+
+    suspend fun load(ctx: Context, file: File) {
         lock.withLock {
             if (loaded) return
-            checkMemory(ctx, file.length(), contextSize)
-            val m: LlamaModel = try {
+            checkMemory(ctx)
+            val wantGpu = Store.localBackend != "cpu"
+            val made: Engine = try {
                 withContext(Dispatchers.Default) {
-                    Llama.loadModel(
-                        file.absolutePath,
-                        LlamaConfig(
-                            contextSize = contextSize,
-                            threads = threads,
-                            temperature = temperature
-                        )
-                    )
+                    if (wantGpu) {
+                        try {
+                            start(ctx, file, true).also { backendName = "gpu" }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            // GPU (OpenCL) is missing or refused on this phone: remember it and use the CPU
+                            Store.localBackend = "cpu"
+                            start(ctx, file, false).also { backendName = "cpu" }
+                        }
+                    } else {
+                        start(ctx, file, false).also { backendName = "cpu" }
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: UnsatisfiedLinkError) {
-                throw LoadFailure("Is device par llama library load nahi hui. 64-bit (arm64) phone chahiye.")
             } catch (e: OutOfMemoryError) {
-                throw LoadFailure("Load ke dauran RAM khatam ho gayi. Baaki apps band karo ya Context size kam karo.")
+                throw LoadFailure("Load ke dauran RAM khatam ho gayi. Baaki apps band karke dobara Load karo.")
             } catch (e: Throwable) {
-                throw LoadFailure("Model load nahi hua: " + (e.message ?: e.javaClass.simpleName))
+                throw LoadFailure("Gemma load nahi hua: " + (e.message ?: e.javaClass.simpleName))
             }
-            model = m
+            engine = made
             loaded = true
         }
     }
 
+    private suspend fun start(ctx: Context, file: File, gpu: Boolean): Engine {
+        val config = EngineConfig(
+            modelPath = file.absolutePath,
+            backend = if (gpu) Backend.GPU() else Backend.CPU(),
+            visionBackend = if (gpu) Backend.GPU() else Backend.CPU(),
+            cacheDir = ctx.cacheDir.path
+        )
+        val e = Engine(config)
+        try {
+            e.initialize()
+        } catch (t: Throwable) {
+            try {
+                e.close()
+            } catch (_: Throwable) {
+                // nothing left to release
+            }
+            throw t
+        }
+        return e
+    }
+
     suspend fun unload() {
         lock.withLock {
-            val m = model
-            model = null
+            val e = engine
+            engine = null
             loaded = false
-            if (m != null) {
+            backendName = ""
+            if (e != null) {
                 withContext(Dispatchers.Default) {
                     try {
-                        Llama.releaseModel(m)
+                        e.close()
                     } catch (_: Throwable) {
-                        // releasing twice is documented as safe; nothing else to do
+                        // closing twice is harmless; nothing else to do
                     }
                 }
             }
         }
     }
 
-    suspend fun generate(system: String, prompt: String, maxTokens: Int): Reply {
+    /**
+     * One reply. [history] is the earlier chat (user/AI turns, text only), [userText] the new message, [images] go
+     * with it as pictures. [onDelta] gets each new piece of text on a background thread. [isCancelled] is polled
+     * between pieces.
+     */
+    suspend fun chat(
+        system: String,
+        history: List<Message>,
+        userText: String,
+        images: List<GeminiClient.Image>,
+        isCancelled: () -> Boolean,
+        onDelta: (String) -> Unit
+    ): Reply {
         return lock.withLock {
-            val m = model ?: throw IllegalStateException("Qwen2.5 model load nahi hai.")
+            val e = engine ?: throw IllegalStateException("Gemma model load nahi hai.")
             busy = true
             try {
                 withContext(Dispatchers.Default) {
                     val started = System.currentTimeMillis()
-                    val r = Llama.complete(
-                        m,
-                        prompt,
-                        systemPrompt = system,
-                        maxTokens = maxTokens
+                    val initial = ArrayList<LmMessage>()
+                    for (m in history) {
+                        val t = m.text.trim()
+                        if (t.isEmpty()) continue
+                        initial.add(if (m.role == Role.USER) LmMessage.user(t) else LmMessage.model(t))
+                    }
+                    val config = ConversationConfig(
+                        systemInstruction = Contents.of(system),
+                        initialMessages = initial,
+                        samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.7)
                     )
-                    val generated = r.tokensGenerated.toInt()
-                    Reply(
-                        clean(r.text),
-                        generated,
-                        r.tokensPerSecond.toFloat(),
-                        System.currentTimeMillis() - started,
-                        generated >= maxTokens - 1
-                    )
+                    val parts = ArrayList<Content>()
+                    for (img in images) parts.add(Content.ImageBytes(img.bytes))
+                    parts.add(Content.Text(userText.ifBlank { " " }))
+                    val out = StringBuilder()
+                    e.createConversation(config).use { conversation ->
+                        conversation.sendMessageAsync(Contents.of(*parts.toTypedArray())).collect { piece ->
+                            if (!isCancelled()) {
+                                val s = piece.toString()
+                                if (s.isNotEmpty()) {
+                                    out.append(s)
+                                    onDelta(s)
+                                }
+                            }
+                        }
+                    }
+                    val ms = System.currentTimeMillis() - started
+                    val text = out.toString().trim()
+                    val tokens = (text.length / 3).coerceAtLeast(if (text.isEmpty()) 0 else 1)
+                    val tps = if (ms > 0) tokens * 1000f / ms else 0f
+                    Reply(text, tokens, tps, ms)
                 }
             } finally {
                 busy = false
@@ -114,25 +186,24 @@ object LocalLlm {
         }
     }
 
-    private fun checkMemory(ctx: Context, modelBytes: Long, contextSize: Int) {
+    /** Plain one-shot call kept for the old probe code ([LocalCalibration]); [maxTokens] is ignored. */
+    suspend fun generate(system: String, prompt: String, @Suppress("UNUSED_PARAMETER") maxTokens: Int): Reply =
+        chat(system, emptyList(), prompt, emptyList(), { false }, { })
+
+    private fun checkMemory(ctx: Context) {
         val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val info = ActivityManager.MemoryInfo()
         am.getMemoryInfo(info)
-        // weights + KV cache + runtime buffers. Qwen2.5 1.5B: 28 layers x 2 KV heads x 128 dims x 2 (K and V)
-        // x 2 bytes (f16) = 28,672 bytes per token; 400 MB covers the compute buffers and the app itself.
-        val need = modelBytes + contextSize.toLong() * KV_BYTES_PER_TOKEN + 400L * 1024 * 1024
+        // Google's numbers for E2B: about 0.7 GB peak on GPU, 1.7 GB on CPU (the 2.6 GB file is memory-mapped).
+        val need = 1_500L * 1024 * 1024
         if (info.availMem < need) {
             throw LoadFailure(
                 "RAM kam hai: " + gb(info.availMem) + " free, lagbhag " + gb(need) +
-                    " chahiye. Baaki apps band karke dobara Load karo ya Context size kam karo."
+                    " chahiye. Baaki apps band karke dobara Load karo."
             )
         }
     }
 
     private fun gb(bytes: Long): String =
         String.format(Locale.US, "%.1f GB", bytes / 1_073_741_824.0)
-
-    private fun clean(raw: String): String = ChatMl.clean(raw)
-
-    private const val KV_BYTES_PER_TOKEN = 28_672L
 }

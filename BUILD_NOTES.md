@@ -569,3 +569,48 @@ torch replies the model copied), "Off" -> English rambling (a bare "off" was not
 4. "kal subah 6 baje utha dena" -> alarm path (not a torch reply). "10 minute baad yaad dilana" -> 10 minute timer.
 5. Attach a photo of a printed page and ask "isme kya likha hai" -> text answer; a photo of a dog -> "kutta/dog" type answer, no names of people.
 6. "create 2 line python code" -> a short code block, no runaway digits.
+
+# Offline engine swap: Qwen2.5 1.5B (llama.cpp) -> Gemma 4 E2B (LiteRT-LM) — honest status
+
+## Why
+Qwen 1.5B was too small for good Hindi + English, re-read the whole prompt on the CPU every turn (slow), could not see
+photos, and needed a lot of repair code. Gemma 4 E2B (2.58 GB, Apache-2.0) runs on Google's LiteRT-LM runtime with GPU/NPU
+support, takes images directly and handles Hindi and English. Google's own table for a flagship phone: prefill 557 tok/s and
+decode 47 tok/s on CPU, 3808 / 52 on GPU. A mid-range phone will be slower.
+
+## What changed
+- `LocalLlm.kt`: rewritten on `com.google.ai.edge.litertlm` (Engine / Conversation). GPU first, CPU if the GPU start fails
+  (the result is remembered in `Store.localBackend`). Streaming replies, history as real user/model messages, images as
+  `Content.ImageBytes`. The old API (`loaded`, `busy`, `unload`, `LoadFailure`, `generate`) is kept so Settings still compiles.
+- `Modules.kt`: model card, URL (`litert-community/gemma-4-E2B-it-litert-lm`, file `gemma-4-E2B-it.litertlm`), size checks;
+  the GGUF header check is replaced by a `.litertlm` file-name check on import.
+- `ChatRunner.runLocal`: new, much shorter. Photos go to the model as pictures. Phone tools still use the text `<tool_call>`
+  format with one repair retry (the model's native tool API was not used: its support for Gemma 4 is not documented).
+  The memory facts (`LocalMemory`), the removal of phone-action turns from the history and Tier-0 stay.
+- Not used any more (still in the source, still unit-tested): `ChatMl`, `LocalTemplate`, `LocalCalibration`, `HinglishGuide`
+  (the Hinglish few-shot and language retry were Qwen workarounds), `Gguf`.
+- All user-facing "Qwen" strings now say "Gemma". The "Qwen options" screen in Settings (prompt shape, context, threads,
+  temperature) no longer does anything.
+- Build tools: AGP 8.5.2 -> 8.10.1, Gradle 8.7 -> 8.11.1, Kotlin 1.9.24 -> 2.2.20, compileSdk 34 -> 36, coroutines 1.8.1 -> 1.11.0
+  (a third-party note says the runtime crashes with NoSuchMethodError on older coroutines). The llama-android dependency is
+  removed. `AndroidManifest.xml` asks for `libOpenCL.so` and `libvndksupport.so` (needed for the GPU backend).
+  Version 2.0 (code 11).
+
+## Verification status — read first
+- **Nothing here was compiled or run.** The runtime API (names such as `Engine`, `EngineConfig(modelPath, backend,
+  visionBackend, cacheDir)`, `Contents.of(...)`, `Content.ImageBytes`, `sendMessageAsync(...): Flow`) was copied from Google's
+  Android guide (page dated 2026-09-04), but `Content.ImageBytes(ByteArray)` and the exact `Message.toString()` streaming
+  behaviour are assumptions. Expect compile errors; send the log.
+- The Kotlin / AGP / compileSdk jump is the most likely source of build errors in the old code (Kotlin 2 is stricter).
+  If the log says the runtime's Kotlin metadata is newer than the compiler, raise Kotlin (for example 2.3.x).
+- `minSdk` is still 26. If the manifest merger complains that the runtime needs a higher minSdk, raise it to what it says.
+- `litertlm-android:latest.release` is a moving version on purpose (the exact number was not known); pin it once it builds.
+
+## Phone check
+1. Settings > Voice and AI: Download (Wi-Fi, 2.6 GB) or Import a `gemma-4-E2B-it.litertlm` you already have, then Load.
+   If the download fails with an access error, download the file in a browser and use Import.
+2. "kaise ho?" -> a Hinglish answer, streaming. "mera naam Rahul hai", new chat, "mera naam kya hai?".
+3. Attach a photo, ask "isme kya hai?" -> the answer should describe the picture.
+4. "torch on", "kal subah 6 baje utha dena" -> phone actions. Caption of each reply shows GPU or CPU.
+5. If the first load is slow (up to ~10 s, longer the very first time), that is the runtime preparing its cache.
+6. The old 986 MB Qwen file is still in the app's models folder; delete it by clearing the app's storage or from a file manager.

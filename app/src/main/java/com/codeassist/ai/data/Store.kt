@@ -110,6 +110,11 @@ object Store {
         get() = prefs.getInt("local_ctx", 4096)
         set(v) = prefs.edit().putInt("local_ctx", v).apply()
 
+    /** Gemma engine backend: "gpu" first; set to "cpu" after a GPU start failed so the next load skips the failed try. */
+    var localBackend: String
+        get() = prefs.getString("local_backend", "gpu") ?: "gpu"
+        set(v) = prefs.edit().putString("local_backend", v).apply()
+
     var localThreads: Int
         get() = prefs.getInt("local_threads", (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 6))
         set(v) = prefs.edit().putInt("local_threads", v).apply()

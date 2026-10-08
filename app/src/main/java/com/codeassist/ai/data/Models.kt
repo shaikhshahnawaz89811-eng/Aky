@@ -24,7 +24,7 @@ data class Message(
     val time: Long = System.currentTimeMillis(),
     /** null = normal, "thinking" = reply in progress (never persisted), "error" = failed reply. */
     val state: String? = null,
-    /** Small caption under AI replies ("Qwen2.5 1.5B · 8.1 tok/s") or the live phase while thinking. */
+    /** Small caption under AI replies ("Gemma 4 E2B · 8.1 tok/s") or the live phase while thinking. */
     val note: String? = null,
     /** "local" (on-device Qwen), "gemini" or "tool" for AI replies; older chats may hold "phi4". */
     val engine: String? = null,

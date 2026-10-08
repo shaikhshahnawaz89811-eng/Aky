@@ -274,7 +274,7 @@ object ChatRunner {
                 val levelText = if (level == FallbackPolicy.Level.L2_OFFLINE) "L2 offline" else "L1 degraded"
                 return Message(
                     id = run.messageId, role = Role.AI,
-                    text = "$transition\n\nQwen2.5 phone mein installed nahi hai, isliye fallback nahi ho saka. " +
+                    text = "$transition\n\nGemma 4 phone mein installed nahi hai, isliye fallback nahi ho saka. " +
                         "Voice and AI mein model Download ya Import karo; agli turn par Gemini phir try hoga.",
                     state = "error", engine = "gemini", note = "$levelText · fallback unavailable"
                 )
@@ -284,7 +284,7 @@ object ChatRunner {
             run.text = ""
             run.engine = "local"
             run.label = transition
-            run.detail = "Gemini -> Qwen · ${level.label}"
+            run.detail = "Gemini -> Gemma · ${level.label}"
             postProgress(run)
 
             return try {
@@ -295,13 +295,13 @@ object ChatRunner {
                         id = run.messageId, role = Role.AI,
                         text = "$transition\n\n" + local.text,
                         state = "error", engine = "local",
-                        note = "Fallback ${level.label} · Qwen reply rejected"
+                        note = "Fallback ${level.label} · Gemma reply rejected"
                     )
                 }
                 ConvKpi.inc("fallback_success")
                 local.copy(
                     text = FallbackPolicy.successLine(level) + "\n\n" + local.text,
-                    note = "Fallback ${level.label} · " + (local.note ?: "Qwen2.5")
+                    note = "Fallback ${level.label} · " + (local.note ?: "Gemma 4")
                 )
             } catch (fallbackError: CancellationException) {
                 throw fallbackError
@@ -310,9 +310,9 @@ object ChatRunner {
                 val details = errorMessage(run, fallbackError).text
                 Message(
                     id = run.messageId, role = Role.AI,
-                    text = "$transition\n\nQwen fallback bhi nahi chal saka: $details",
+                    text = "$transition\n\nGemma fallback bhi nahi chal saka: $details",
                     state = "error", engine = "local",
-                    note = "Fallback ${level.label} · Qwen failed"
+                    note = "Fallback ${level.label} · Gemma failed"
                 )
             }
         }
@@ -389,12 +389,47 @@ object ChatRunner {
         )
     }
 
-    // ---------- Qwen2.5 1.5B (on device) ----------
+    // ---------- Gemma 4 E2B (on device, LiteRT-LM) ----------
+
+    private const val LOCAL_NAME = "Gemma 4 E2B"
+    private const val LOCAL_TURNS = 24
+    private const val LOCAL_HISTORY_CHARS = 16_000
+
+    /**
+     * The chat as real user/model messages for the runtime: newest turns first up to a size limit, same-role
+     * neighbours merged (a failed turn can leave two user messages in a row), starting with a user turn and ending
+     * with a model turn (the new message follows).
+     */
+    private fun recentTurns(chat: List<Message>): List<Message> {
+        val picked = ArrayList<Message>()
+        var chars = 0
+        for (m in chat.asReversed().take(LOCAL_TURNS)) {
+            val t = m.text.trim()
+            if (t.isEmpty()) continue
+            val cut = if (t.length > 1500) t.take(1500) + "..." else t
+            chars += cut.length
+            if (chars > LOCAL_HISTORY_CHARS) break
+            picked.add(m.copy(text = cut))
+        }
+        picked.reverse()
+        while (picked.isNotEmpty() && picked[0].role != Role.USER) picked.removeAt(0)
+        val merged = ArrayList<Message>()
+        for (m in picked) {
+            val last = if (merged.isEmpty()) null else merged[merged.size - 1]
+            if (last != null && last.role == m.role) {
+                merged[merged.size - 1] = last.copy(text = last.text + "\n\n" + m.text)
+            } else {
+                merged.add(m)
+            }
+        }
+        while (merged.isNotEmpty() && merged[merged.size - 1].role == Role.USER) merged.removeAt(merged.size - 1)
+        return merged
+    }
 
     private suspend fun runLocal(app: Context, run: Run, history: List<Message>, latest: Message): Message {
         when (Modules.phase) {
             Modules.Phase.NOT_IMPORTED, Modules.Phase.ERROR, Modules.Phase.DOWNLOADING, Modules.Phase.IMPORTING ->
-                throw ReplyError("Qwen2.5 abhi taiyaar nahi hai. Voice and AI mein Download ya Import karo, ya Gemini chuno.")
+                throw ReplyError("Gemma 4 abhi taiyaar nahi hai. Voice and AI mein Download ya Import karo, ya Gemini chuno.")
             else -> Unit
         }
         if (!LocalLlm.loaded) {
@@ -408,186 +443,82 @@ object ChatRunner {
             run.label = "Pichla reply khatam ho raha hai"
             postProgress(run)
         }
-
-        // Which prompt shape this model + library pair really understands. Tested once per model file
-        // (LocalCalibration); a forced choice in Qwen options skips the test.
-        val kind = LocalCalibration.resolve { status ->
-            run.label = status
-            postProgress(run)
-        }
-        run.label = "Qwen soch raha hai"
+        run.label = "Gemma soch raha hai"
         postProgress(run)
 
-        // A greeting gets a short budget: if the model does not stop, little damage is done.
-        val smallTalk = latest.attachments.isEmpty() && ReplyGuard.isSmallTalk(latest.text)
-        var maxTokens = Prompts.maxTokensLocal(Store.replyLength)
-        if (run.viaVoice && Store.replyLength != "Long") maxTokens = minOf(maxTokens, 220)
-        if (smallTalk) maxTokens = minOf(maxTokens, Prompts.SMALL_TALK_TOKENS)
-        val budget = Prompts.budgetChars(Store.localContext, maxTokens)
+        // Images go to the model as pictures (Gemma 4 is multimodal); text files are inlined as for Gemini.
         val payload = withContext(Dispatchers.IO) {
-            AttachmentText.read(
-                app, latest.attachments, allowImages = false, maxChars = budget / 2,
-                ocrImages = Store.localScreenshotOcr
-            )
+            AttachmentText.read(app, latest.attachments, true, 40_000)
         }
-
-        // A short question about a photo, but nothing readable came out of it: say so. A 1.5B model that only
-        // sees "isko jante ho?" makes something up.
-        val hasImage = latest.attachments.any { it.kind == AttachKind.IMAGE }
-        if (ReplyGuard.needsImage(latest.text, hasImage, payload.text.isNotBlank())) {
-            ConvKpi.inc("local_image_block")
-            run.detail = "image: local model skipped"
-            val how = if (Store.localScreenshotOcr) {
-                "Is photo mein na padhne layak text mila na koi pehchaani hui cheez. "
-            } else {
-                "Photo analysis band hai: Voice and AI mein \"Qwen ke liye attached-image OCR\" on karo. "
-            }
-            return Message(
-                id = run.messageId, role = Role.AI, engine = "local",
-                text = "Offline Qwen photo seedha nahi dekh sakta (photo se sirf text aur kuch cheezon ke naam nikalte " +
-                    "hain), isliye main andaza lagakar jawab nahi dunga.\n\n" + how +
-                    "Photo samjhane ke liye Gemini chuno (internet chahiye) ya photo ka text yahan paste karo.",
-                note = "Qwen2.5 1.5B · text-only"
-            )
-        }
-
-        val system = Prompts.systemLocal(run.viaVoice)
         val userText = Prompts.combineLatest(latest.text, payload.text)
-        // History without phone-action exchanges; for a Hinglish message two example exchanges go in front of it.
-        val chatHistory = localHistory(history)
-        val hinglish = HinglishGuide.userWritesHinglish(latest.text)
-        val shaped = if (hinglish) HinglishGuide.fewShot() + chatHistory else chatHistory
-        // Tools only in the verified ChatML shape: the repair retry below needs real turn markers.
-        val wantTools = kind == LocalTemplate.Kind.CHATML && latest.attachments.isEmpty() &&
-            ActionHint.looksLikeAction(latest.text)
-        val built: LocalTemplate.Built = if (wantTools) {
-            LocalTemplate.Built(
-                "",
-                ChatMl.build(
-                    ChatMl.withTools(
-                        system, Prompts.TOOL_RULES + "\n" + Prompts.LOCAL_TOOL_HINT, ToolSpecs.qwenToolsBlock()
-                    ),
-                    shaped, userText, budget
-                )
-            )
-        } else {
-            LocalTemplate.build(kind, system, shaped, userText, budget)
-        }
-        var reply = LocalLlm.generate(built.system, built.prompt, maxTokens)
-        var tokens = reply.tokens
-        var millis = reply.millis
+        val past = recentTurns(localHistory(history))
 
-        var outcome: Message? = null
-        if (wantTools && reply.text.isNotBlank()) {
-            val first = PlanParser.parse(reply.text)
-            var parsed: PlanParser.Parsed = first
-            if (first is PlanParser.Parsed.Invalid) {
+        // Phone tools only for a plain, short, action-looking message (same rule as before; a few hundred tokens).
+        val wantTools = latest.attachments.isEmpty() && ActionHint.looksLikeAction(latest.text)
+        var system = Prompts.systemLocal(run.viaVoice)
+        if (wantTools) {
+            system += "\n" + Prompts.TOOL_RULES + "\n" + Prompts.LOCAL_TOOL_HINT + "\n\n" + ToolSpecs.qwenToolsBlock()
+        }
+
+        var lastPost = 0L
+        val reply = LocalLlm.chat(system, past, userText, payload.images, { run.cancelled }) { delta ->
+            // a tool call is parsed first, so its raw "<tool_call>" text is never shown while it is written
+            if (!wantTools) {
+                if (run.firstTokenMs == 0L) run.firstTokenMs = System.currentTimeMillis() - run.startedAt
+                run.text = run.text + delta
+                val now = System.currentTimeMillis()
+                if (now - lastPost > 90) {
+                    lastPost = now
+                    postProgress(run)
+                }
+            }
+        }
+        run.tokens = reply.tokens
+        run.tps = reply.tokensPerSecond
+        val speed = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
+        val where = if (LocalLlm.backendName.isEmpty()) "" else " · " + LocalLlm.backendName.uppercase(Locale.US)
+        var caption = "$LOCAL_NAME$where · ~$speed tok/s · ${reply.millis / 1000}s"
+
+        var finalText = reply.text.trim()
+        if (wantTools && finalText.isNotEmpty()) {
+            var parsed: PlanParser.Parsed = PlanParser.parse(finalText)
+            if (parsed is PlanParser.Parsed.Invalid) {
                 // audit Sec 9.3: one repair retry, then a question, never a guess
                 run.label = "Tool call theek kar raha hoon"
                 postProgress(run)
-                val note = "Your tool call was not valid: " + first.reason +
+                val note = "Your tool call was not valid: " + parsed.reason +
                     ". Reply again with correct <tool_call> blocks, or answer in plain text."
-                reply = LocalLlm.generate("", ChatMl.appendTurn(built.prompt, reply.text, note), maxTokens)
-                tokens += reply.tokens
-                millis += reply.millis
-                parsed = PlanParser.parse(reply.text)
+                val withAnswer = past +
+                    Message(role = Role.USER, text = userText) +
+                    Message(role = Role.AI, text = finalText)
+                val again = LocalLlm.chat(system, withAnswer, note, emptyList(), { run.cancelled }) { }
+                caption = "$LOCAL_NAME$where · ${(reply.millis + again.millis) / 1000}s"
+                parsed = PlanParser.parse(again.text)
             }
-            val speedNow = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
-            val caption = "Qwen2.5 1.5B · $speedNow tok/s · ${millis / 1000}s"
             when (parsed) {
                 is PlanParser.Parsed.Calls ->
-                    outcome = planMessage(app, run, "local", caption, parsed.ack, parsed.tasks, payload.skipped)
+                    return planMessage(app, run, "local", caption, parsed.ack, parsed.tasks, payload.skipped)
                 is PlanParser.Parsed.Invalid -> {
                     run.detail = "plan refused twice: " + parsed.reason
-                    outcome = Message(
+                    return Message(
                         id = run.messageId, role = Role.AI, text = CLARIFY, engine = "local",
                         note = noteWith(caption, payload.skipped)
                     )
                 }
-                is PlanParser.Parsed.Text -> Unit
+                is PlanParser.Parsed.Text -> finalText = parsed.text.trim()
             }
         }
-        run.tokens = tokens
-        run.tps = reply.tokensPerSecond
-        if (outcome != null) return outcome
-
-        // Plain answer: check it, keep the clean beginning of a rambling one, ask once more for a broken one.
-        val plain = if (wantTools) PlanParser.parse(reply.text) else null
-        var shown = if (plain is PlanParser.Parsed.Text) plain.text else LocalTemplate.finish(kind, reply.text)
-        var verdict = ReplyGuard.inspect(shown, latest.text, reply.capped, smallTalk)
-        var retried = false
-        if (!verdict.ok) {
-            retried = true
-            ConvKpi.inc("local_guard_retry")
-            run.label = "Jawab saaf nahi tha, dobara soch raha hoon"
-            postProgress(run)
-            val retryTokens = minOf(maxTokens, 200)
-            val retryBuilt = LocalTemplate.build(
-                kind, Prompts.LOCAL_MINIMAL_SYSTEM, ReplyGuard.cleanHistory(chatHistory).takeLast(2), userText,
-                Prompts.budgetChars(Store.localContext, retryTokens)
-            )
-            reply = LocalLlm.generate(retryBuilt.system, retryBuilt.prompt, retryTokens)
-            tokens += reply.tokens
-            millis += reply.millis
-            shown = LocalTemplate.finish(kind, reply.text)
-            verdict = ReplyGuard.inspect(shown, latest.text, reply.capped, smallTalk)
-            run.tokens = tokens
-            run.tps = reply.tokensPerSecond
-        }
-        if (!verdict.ok) {
-            ConvKpi.inc("local_guard_fail")
-            val why = verdict.problem ?: "unusable"
-            run.detail = "local reply refused: $why"
+        if (finalText.isEmpty()) {
+            run.detail = "local reply empty"
             return Message(
                 id = run.messageId, role = Role.AI, engine = "local", state = "error",
-                text = "Offline model ne is baar saaf jawab nahi diya (ye chhota 1.5B model hai). " +
-                    "Sawaal thoda chhota karke dobara poochho, ya Gemini chuno.",
-                note = "Qwen2.5 1.5B · jawab reject ($why)"
+                text = "Gemma ne is baar khaali jawab diya. Dobara try karo.",
+                note = caption
             )
         }
-        // Hinglish in, English out: ask once more with "Ji, " already written for the model to continue from.
-        var langRetried = false
-        if (hinglish && !HinglishGuide.replyMatchesLanguage(latest.text, verdict.text)) {
-            ConvKpi.inc("local_lang_retry")
-            langRetried = true
-            run.label = "Hinglish mein dobara likh raha hoon"
-            postProgress(run)
-            val langTokens = minOf(maxTokens, 260)
-            val pre = HinglishGuide.prefillFor(kind)
-            val facts = LocalMemory.block(Store.userFacts)
-            val langBuilt = LocalTemplate.build(
-                kind,
-                HinglishGuide.RETRY_SYSTEM + (if (facts.isEmpty()) "" else "\n" + facts),
-                HinglishGuide.fewShot() + ReplyGuard.cleanHistory(chatHistory).takeLast(2),
-                userText,
-                Prompts.budgetChars(Store.localContext, langTokens)
-            )
-            val tail = if (pre.isEmpty()) "" else if (kind == LocalTemplate.Kind.PLAIN) " " + pre else pre
-            val second = LocalLlm.generate(langBuilt.system, langBuilt.prompt + tail, langTokens)
-            tokens += second.tokens
-            millis += second.millis
-            val secondShown = pre + LocalTemplate.finish(kind, second.text)
-            val secondVerdict = ReplyGuard.inspect(secondShown, latest.text, second.capped, smallTalk)
-            // keep the first answer unless the second one is clean AND really in Hinglish
-            if (secondVerdict.ok && HinglishGuide.replyMatchesLanguage(latest.text, second.text)) {
-                shown = secondShown
-                verdict = secondVerdict
-                reply = second
-            }
-            run.tokens = tokens
-            run.tps = reply.tokensPerSecond
-        }
-        if (verdict.problem != null) {
-            ConvKpi.inc("local_guard_trim")
-            run.detail = "local reply trimmed: " + verdict.problem
-        }
-        val speed = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
-        val secs = millis / 1000
-        val shape = (if (retried) kind.key + " · 2. koshish" else kind.key) +
-            (if (langRetried) " · hinglish retry" else "")
         return Message(
-            id = run.messageId, role = Role.AI, text = verdict.text, engine = "local",
-            note = noteWith("Qwen2.5 1.5B · $speed tok/s · ${secs}s · $shape", payload.skipped)
+            id = run.messageId, role = Role.AI, text = finalText, engine = "local",
+            note = noteWith(caption, payload.skipped)
         )
     }
 

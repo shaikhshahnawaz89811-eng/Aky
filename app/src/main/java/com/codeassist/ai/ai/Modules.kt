@@ -21,12 +21,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.IOException
-import java.io.InputStream
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Single source of truth for the on-device model card (Qwen2.5 1.5B Instruct, GGUF Q4_K_M).
+ * Single source of truth for the on-device model card (Gemma 4 E2B Instruct, LiteRT-LM bundle, .litertlm).
  *
  *   NOT_IMPORTED --Download/Import--> DOWNLOADING/IMPORTING --> UNLOADED --Load--> LOADING --> LOADED
  *   LOADED --Unload--> UNLOADED --Delete--> NOT_IMPORTED
@@ -38,16 +37,16 @@ import java.util.concurrent.CopyOnWriteArrayList
  * reports it and [deleteLegacyPhi] frees the space (the user decides; nothing is deleted silently).
  */
 object Modules {
-    const val MODEL_TITLE = "Qwen2.5 1.5B Instruct"
-    const val MODEL_QUANT = "Q4_K_M"
-    const val MODEL_SIZE_LABEL = "986 MB"
+    const val MODEL_TITLE = "Gemma 4 E2B Instruct"
+    const val MODEL_QUANT = "LiteRT-LM"
+    const val MODEL_SIZE_LABEL = "2.6 GB"
     const val MODEL_URL =
-        "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/" +
-            "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
-    private const val MODEL_FILE = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-    private const val MODEL_PART = "qwen2.5-1.5b-instruct-q4_k_m.gguf.part"
-    private const val MODEL_BYTES_ESTIMATE = 1_100_000_000L
-    private const val MIN_VALID_BYTES = 450L * 1024 * 1024
+        "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/" +
+            "gemma-4-E2B-it.litertlm"
+    private const val MODEL_FILE = "gemma-4-e2b-it.litertlm"
+    private const val MODEL_PART = "gemma-4-e2b-it.litertlm.part"
+    private const val MODEL_BYTES_ESTIMATE = 2_700_000_000L
+    private const val MIN_VALID_BYTES = 1_500L * 1024 * 1024
 
     // files of the removed Phi-4 mini module
     private const val LEGACY_PHI_FILE = "phi4-mini-instruct-q4_k_m.gguf"
@@ -195,10 +194,12 @@ object Modules {
                 val resolver = app.contentResolver
                 val size = querySize(uri)
                 // 1) reject a wrong file in milliseconds, before copying the whole file
-                resolver.openInputStream(uri)?.use { checkHeader(it) }
-                    ?: throw IOException("File khul nahi payi.")
+                val name = queryName(uri)
+                if (name != null && !name.endsWith(".litertlm", ignoreCase = true)) {
+                    throw IOException("Ye .litertlm file nahi hai (" + name + "). gemma-4-E2B-it.litertlm file chuno.")
+                }
                 if (size in 1 until MIN_VALID_BYTES) {
-                    throw IOException("File bahut chhoti hai (" + fmt(size) + "). Poori Qwen2.5 1.5B .gguf file chuno.")
+                    throw IOException("File bahut chhoti hai (" + fmt(size) + "). Poori Gemma 4 E2B .litertlm file chuno.")
                 }
                 val need = if (size > 0) size else MODEL_BYTES_ESTIMATE
                 if (freeBytes(modelsDir()) < need + 150L * 1024 * 1024) {
@@ -248,21 +249,17 @@ object Modules {
         }
     }
 
-    private fun checkHeader(input: InputStream) {
-        val info = Gguf.readInfo(input)
-        val arch = info.architecture ?: throw IOException("GGUF mein architecture nahi mili.")
-        // Qwen2.5 Instruct and Qwen2.5-Coder are both "qwen2". "qwen2vl" is the picture model (needs an extra
-        // projector file) and "qwen3" has a different chat style: neither is accepted here.
-        if (arch != "qwen2") {
-            throw IOException(
-                "Ye Qwen2.5 file nahi lagti (architecture: " + arch +
-                    "). Qwen2.5-1.5B-Instruct Q4_K_M .gguf file chuno."
-            )
+    private fun queryName(uri: Uri): String? {
+        return try {
+            app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
     private fun install(part: File) {
-        part.inputStream().use { checkHeader(it) }
         if (part.length() < MIN_VALID_BYTES) {
             throw IOException("File adhoori lag rahi hai (" + fmt(part.length()) + ").")
         }
@@ -415,11 +412,11 @@ object Modules {
                 return
             }
             if (!file.exists()) {
-                throw LocalLlm.LoadFailure("Qwen2.5 model import nahi hua. Voice and AI mein Download ya Import karo.")
+                throw LocalLlm.LoadFailure("Gemma model import nahi hua. Voice and AI mein Download ya Import karo.")
             }
             setPhase(Phase.LOADING, file.length(), file.length(), "Model RAM mein load ho raha hai…")
             try {
-                LocalLlm.load(app, file, Store.localContext, Store.localThreads, Store.localTemp)
+                LocalLlm.load(app, file)
                 setPhase(Phase.LOADED, file.length(), file.length(), null)
             } catch (e: CancellationException) {
                 setPhase(Phase.UNLOADED, file.length(), file.length(), null)

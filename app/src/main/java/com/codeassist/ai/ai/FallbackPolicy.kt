@@ -30,14 +30,14 @@ object FallbackPolicy {
         if (status == 408 || status == 429 || status in 500..599) Level.L1_DEGRADED else null
 
     fun transitionLine(level: Level): String = when (level) {
-        Level.L1_DEGRADED -> "Gemini slow ya busy hai; is turn ke liye Qwen2.5 fallback try kar raha hoon."
-        Level.L2_OFFLINE -> "Internet nahi mila; is turn ke liye phone par Qwen2.5 fallback try kar raha hoon."
+        Level.L1_DEGRADED -> "Gemini slow ya busy hai; is turn ke liye Gemma 4 fallback try kar raha hoon."
+        Level.L2_OFFLINE -> "Internet nahi mila; is turn ke liye phone par Gemma 4 fallback try kar raha hoon."
     }
 
     fun successLine(level: Level): String = when (level) {
         Level.L1_DEGRADED ->
-            "Gemini slow ya busy tha. Ye jawab phone par Qwen2.5 se bana; agli turn mein Gemini phir try hoga."
+            "Gemini slow ya busy tha. Ye jawab phone par Gemma 4 se bana; agli turn mein Gemini phir try hoga."
         Level.L2_OFFLINE ->
-            "Internet nahi mila. Ye jawab phone par Qwen2.5 se bana; connection aane par Gemini agli turn mein phir try hoga."
+            "Internet nahi mila. Ye jawab phone par Gemma 4 se bana; connection aane par Gemini agli turn mein phir try hoga."
     }
 }

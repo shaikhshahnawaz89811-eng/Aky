@@ -3,16 +3,22 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
 android {
     namespace 'com.codeassist.ai'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.codeassist.ai"
         minSdk 26
         targetSdk 34
-        versionCode 9
-        versionName "1.8"
+        versionCode 11
+        versionName "2.0"
     }
 
     buildTypes {
@@ -30,9 +36,6 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = '17'
-    }
 
     lint {
         // CI runs lintDebug as its own non-blocking step; lint findings must not stop assembleRelease.
@@ -50,12 +53,11 @@ dependencies {
     implementation 'androidx.activity:activity-ktx:1.9.3'
     implementation 'androidx.fragment:fragment-ktx:1.8.5'
     implementation 'com.google.code.gson:gson:2.11.0'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0'
     // Bundled Latin OCR model for the opt-in, on-device Qwen screenshot-reading path.
     implementation 'com.google.mlkit:text-recognition:16.0.1'
-    implementation 'com.google.mlkit:image-labeling:17.0.9'
-    // On-device GGUF inference (llama.cpp AAR, arm64-v8a, API 24+). Free API: loadModel / complete / releaseModel.
-    implementation 'dev.ffmpegkit-maintained:llama-android:0.1.1'
+    // On-device Gemma 4 E2B (.litertlm) through Google's LiteRT-LM runtime. Needs coroutines >= 1.11.0 (see above).
+    implementation 'com.google.ai.edge.litertlm:litertlm-android:latest.release'
 
     testImplementation 'junit:junit:4.13.2'
 }

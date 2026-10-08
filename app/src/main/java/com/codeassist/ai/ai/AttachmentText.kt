@@ -8,8 +8,6 @@ import com.codeassist.ai.data.AttachKind
 import com.codeassist.ai.data.Attachment
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.label.ImageLabeling
-import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.ByteArrayOutputStream
@@ -48,7 +46,7 @@ object AttachmentText {
                 a.kind == AttachKind.IMAGE -> {
                     if (!allowImages) {
                         if (!ocrImages) {
-                            skipped.add(a.name + " (image: Qwen2.5 sirf text padhta hai; OCR setting off hai)")
+                            skipped.add(a.name + " (image: Gemma 4 sirf text padhta hai; OCR setting off hai)")
                         } else if (left < 200) {
                             skipped.add(a.name + " (OCR text ke liye context mein jagah nahi)")
                         } else {
@@ -189,22 +187,8 @@ object AttachmentText {
         }
     }
 
-    private fun imageLabels(image: InputImage): List<String> {
-        val labeler = ImageLabeling.getClient(
-            ImageLabelerOptions.Builder().setConfidenceThreshold(0.6f).build()
-        )
-        return try {
-            Tasks.await(labeler.process(image), 20, TimeUnit.SECONDS)
-                .sortedByDescending { it.confidence }
-                .map { it.text }
-                .distinct()
-                .take(6)
-        } catch (_: Exception) {
-            emptyList()
-        } finally {
-            labeler.close()
-        }
-    }
+    /** Object labels need an extra ML Kit library; kept as a stub so it can be added back later. */
+    private fun imageLabels(@Suppress("UNUSED_PARAMETER") image: InputImage): List<String> = emptyList()
 
     private fun decodeBitmap(ctx: Context, a: Attachment): Bitmap? {
         val uri = Uri.parse(a.uri)

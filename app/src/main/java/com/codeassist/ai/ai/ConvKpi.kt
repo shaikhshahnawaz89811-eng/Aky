@@ -168,17 +168,17 @@ object ConvKpi {
             sb.append("\nBattery: abhi koi saaf sample nahi. Screen band aur charger nikla hona chahiye; kuch phones battery ka charge counter hi nahi dete.\n")
         }
 
-        sb.append("\nGemini degrade / Qwen fallback\n")
+        sb.append("\nGemini degrade / Gemma fallback\n")
         sb.append("  L0 full Gemini: ").append(get("degrade_l0_full"))
             .append(" · L1 timeout / busy: ").append(get("degrade_l1"))
             .append(" · L2 no route / DNS: ").append(get("degrade_l2")).append("\n")
-        sb.append("  Qwen fallback: ").append(get("fallback_success")).append(" successful")
+        sb.append("  Gemma fallback: ").append(get("fallback_success")).append(" successful")
             .append(" · ").append(get("fallback_unavailable")).append(" model unavailable")
-            .append(" · ").append(get("fallback_failed")).append(" Qwen errors\n")
-        sb.append("  Screenshot OCR (Qwen-only, opt-in): ").append(get("ocr_success"))
+            .append(" · ").append(get("fallback_failed")).append(" Gemma errors\n")
+        sb.append("  Screenshot OCR (Gemma-only, opt-in): ").append(get("ocr_success"))
             .append(" read · ").append(get("ocr_failed")).append(" unreadable / failed\n")
 
-        sb.append("\nOffline Qwen jawab (offline fix part 1)\n")
+        sb.append("\nOffline Gemma jawab (offline fix part 1)\n")
         val shape = try {
             val chosen = Store.localTemplate
             if (chosen == "auto") "auto → " + Store.localTemplateResult.ifBlank { "test baaki" } else chosen

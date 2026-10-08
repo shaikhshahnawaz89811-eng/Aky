@@ -180,18 +180,18 @@ class VoiceAiFragment : Fragment() {
 
         section("Reliability and local reading")
         card {
-            switchRow(R.drawable.ic_globe, "Gemini se Qwen automatic fallback", Store.automaticFallback) {
+            switchRow(R.drawable.ic_globe, "Gemini se Gemma automatic fallback", Store.automaticFallback) {
                 Store.automaticFallback = it
             }
             noteRow(
-                "Sirf timeout, network, rate-limit ya server failure par is turn ke liye installed Qwen chalta hai. " +
+                "Sirf timeout, network, rate-limit ya server failure par is turn ke liye installed Gemma chalta hai. " +
                     "Aapka selected brain Gemini hi rahega; agli turn par Gemini phir try hoga."
             )
-            switchRow(R.drawable.ic_image, "Qwen ke liye attached-image OCR", Store.localScreenshotOcr) {
+            switchRow(R.drawable.ic_image, "Gemma ke liye attached-image OCR", Store.localScreenshotOcr) {
                 Store.localScreenshotOcr = it
             }
             noteRow(
-                "Optional Latin / English text OCR phone par hota hai. OCR text sirf Qwen prompt mein jaata hai; " +
+                "Optional Latin / English text OCR phone par hota hai. OCR text sirf Gemma prompt mein jaata hai; " +
                     "attachments par phone-action tools phir bhi band rehte hain."
             )
         }
@@ -329,10 +329,10 @@ class VoiceAiFragment : Fragment() {
         section("Privacy")
         card {
             noteRow(
-                "Qwen2.5 (on-device): aapka text sirf is phone par process hota hai.\n\n" +
+                "Gemma 4 (on-device): aapka text sirf is phone par process hota hai.\n\n" +
                     "Gemini: aapka text (aur bheji gayi image / text file) Google ko jaata hai. " +
                     "API key sirf is phone par Android Keystore se encrypted rehti hai.\n\n" +
-                    "Qwen screenshot OCR ON ho toh image ka pehchana hua text isi phone par banta hai. " +
+                    "Gemma screenshot OCR ON ho toh image ka pehchana hua text isi phone par banta hai. " +
                     "Ye OCR setting Gemini ko bheje gaye original attachments ko nahi badalti.\n\n" +
                     "ElevenLabs voice (ON ho toh): jo reply bolna hai wo text ElevenLabs ko jaata hai. Key sirf is phone par encrypted rehti hai, " +
                     "app mein build ke saath nahi aati.\n\n" +
@@ -368,7 +368,7 @@ class VoiceAiFragment : Fragment() {
             setBackgroundResource(R.drawable.seg_track)
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
-        val local = segment("On-device · Qwen") { setProvider("local") }
+        val local = segment("On-device · Gemma") { setProvider("local") }
         val cloud = segment("Cloud · Gemini") { setProvider("gemini") }
         seg.addView(local, LinearLayout.LayoutParams(0, dp(40), 1f))
         seg.addView(cloud, LinearLayout.LayoutParams(0, dp(40), 1f))
@@ -528,9 +528,9 @@ class VoiceAiFragment : Fragment() {
     private fun confirmDownload() {
         val metered = Modules.isMetered()
         val builder = AlertDialog.Builder(requireContext())
-            .setTitle("Qwen2.5 1.5B download")
+            .setTitle("Gemma 4 E2B download")
             .setMessage(
-                "Hugging Face se " + Modules.MODEL_SIZE_LABEL + " ki file aayegi (bartowski GGUF, Apache-2.0 licence). " +
+                "Hugging Face se " + Modules.MODEL_SIZE_LABEL + " ki file aayegi (Google litert-community, Apache-2.0 licence). " +
                     "Android ka download manager ise chalayega: app band ho jaye tab bhi chalta rahega.\n\n" +
                     (if (metered) "Abhi mobile data par ho, " + Modules.MODEL_SIZE_LABEL + " kharch hoga."
                     else "Abhi Wi-Fi par ho, theek hai.")
@@ -547,7 +547,7 @@ class VoiceAiFragment : Fragment() {
 
     private fun confirmDelete() {
         AlertDialog.Builder(requireContext())
-            .setTitle("Qwen2.5 1.5B delete karein?")
+            .setTitle("Gemma 4 E2B delete karein?")
             .setMessage("Model file phone se hat jayegi. Dobara chahiye toh download ya import karna hoga.")
             .setPositiveButton("Delete") { _, _ -> Modules.requestDelete()?.let { toast(it) } }
             .setNegativeButton("Cancel", null)
@@ -963,7 +963,7 @@ class VoiceAiFragment : Fragment() {
         val oldPhi = Modules.legacyPhiBytes()
         if (oldPhi > 0L) items.add("Purani Phi-4 file delete · " + Modules.fmt(oldPhi))
         AlertDialog.Builder(requireContext())
-            .setTitle("Qwen2.5 1.5B options")
+            .setTitle("Gemma 4 E2B options")
             .setItems(items.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> choose("Context size (tokens)", listOf("2048", "4096", "6144", "8192"), Store.localContext.toString()) {
