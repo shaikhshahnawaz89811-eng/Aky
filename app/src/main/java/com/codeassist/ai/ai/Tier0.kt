@@ -102,7 +102,7 @@ object Tier0 {
     }
 
     private val datePhrases = Regex(
-        "^(aaj ki |aaj )?(date|tarikh|tareekh)( kya)?( hai| hain| batao| bata do)*$|" +
+        "^(aaj ki |aaj )?(date|tarikh|tareekh)( kya| konsi| kaun si| kaunsi| kon si)?( hai| hain| batao| bata do| aaj)*$|" +
             "^aaj kaun sa din( hai)?$|^what s (the )?(today s )?date$|^today s date$|^what day is it( today)?$"
     )
 
@@ -328,7 +328,8 @@ object Tier0 {
         var h = clock.hour
         val m = clock.minute
         if (h <= 12) {
-            val cue = clock.cue ?: cueWord(t)
+            // "kal 8 baje uthna hai" is a morning wish: without another cue 3..11 means AM, not "whichever is nearer"
+            val cue = clock.cue ?: cueWord(t) ?: (if (wantsWake(t) && h in 3..11) "am" else null)
             h = when (cue) {
                 "am" -> if (h == 12) 0 else h
                 "pm" -> if (h == 12) 12 else h + 12

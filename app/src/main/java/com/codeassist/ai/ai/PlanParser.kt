@@ -3,6 +3,8 @@ package com.codeassist.ai.ai
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.stream.JsonReader
+import java.io.StringReader
 
 /**
  * Reads the Qwen reply. The Free llama-android API has no function calling and no grammar-constrained JSON,
@@ -25,7 +27,10 @@ object PlanParser {
     private const val CLOSE = "</tool_call>"
 
     fun parse(raw: String): Parsed {
-        val text = ChatMl.clean(raw)
+        val cleaned = ChatMl.clean(raw)
+        // Gemma sometimes writes the call as a ```json {"tool_call": [...]} block instead of <tool_call> tags
+        val text = if (cleaned.contains(OPEN)) cleaned else rewriteJsonCalls(cleaned)
+        val rewritten = text != cleaned
         if (!text.contains(OPEN)) return Parsed.Text(text)
 
         val ack = StringBuilder()
@@ -50,7 +55,60 @@ object PlanParser {
         }
         val problem = ToolSpecs.check(tasks)
         if (problem != null) return Parsed.Invalid(problem, tidy(ack))
-        return Parsed.Calls(tidy(ack), tasks)
+        // the words around a rewritten block were written for a JSON code block ("Sorry ... yeh raha:"): drop them
+        return Parsed.Calls(if (rewritten) "" else tidy(ack), tasks)
+    }
+
+    private val jsonFence = Regex("```(?:json)?\\s*([\\s\\S]*?)```")
+
+    private fun rewriteJsonCalls(text: String): String {
+        if (!text.contains("tool_call")) return text
+        var out = text
+        for (m in jsonFence.findAll(text)) {
+            val body = m.groupValues[1]
+            if (!body.contains("tool_call")) continue
+            val calls = try {
+                jsonCalls(body)
+            } catch (_: Throwable) {
+                null
+            }
+            if (calls == null || calls.isEmpty()) continue
+            out = out.replace(m.value, calls.joinToString("") { OPEN + it + CLOSE })
+        }
+        return out
+    }
+
+    /** {"tool_call": [{"name": "date_today", "arguments": {}}]} -> one JSON object per call, or null if it is not that shape. */
+    private fun jsonCalls(body: String): List<String>? {
+        // parseReader does not insist that the whole text is consumed: a stray "}" after the object is tolerated
+        val root = JsonParser.parseReader(JsonReader(StringReader(body.trim())))
+        if (!root.isJsonObject) return null
+        val holder = root.asJsonObject
+        val el = holder.get("tool_call") ?: holder.get("tool_calls") ?: return null
+        val items = if (el.isJsonArray) el.asJsonArray.toList() else listOf(el)
+        val out = ArrayList<String>()
+        for (item in items) {
+            if (!item.isJsonObject) return null
+            val o = item.asJsonObject
+            var name: String? = null
+            val nameEl = o.get("name")
+            if (nameEl != null && nameEl.isJsonPrimitive) name = nameEl.asString.trim()
+            if (name.isNullOrEmpty()) {
+                // {"1": "date_today"}: take the value that is a known tool name
+                name = null
+                for ((_, v) in o.entrySet()) {
+                    if (v.isJsonPrimitive && v.asJsonPrimitive.isString && ToolSpecs.find(v.asString.trim()) != null) {
+                        name = v.asString.trim()
+                    }
+                }
+            }
+            if (name == null) return null
+            val call = JsonObject()
+            call.addProperty("name", name)
+            call.add("arguments", o.get("arguments") ?: o.get("parameters") ?: JsonObject())
+            out.add(call.toString())
+        }
+        return out
     }
 
     private fun tidy(sb: StringBuilder): String = sb.toString().replace(Regex("\\s+"), " ").trim()

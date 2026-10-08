@@ -30,8 +30,11 @@ object LocalMemory {
         "hai", "hain", "h", "he", "hoon", "hu", "hun", "hoo", "ho", "aur", "and", "or", "mein", "me", "mai",
         "ko", "ka", "ki", "ke", "se", "par", "pe", "bahut", "bohot", "ji", "bhi", "toh", "to", "na", "yaar",
         "rehta", "rehti", "pasand", "passand", "lekin", "but", "ye", "yeh", "wo", "woh", "kuch", "sab", "koi",
-        "kya", "kaun", "kahan", "kab"
+        "kya", "kaun", "kahan", "kab", "btao", "batao", "bata", "bataiye", "bolo", "sunao", "pata", "nahi", "nahin", "kon"
     )
+
+    /** A note that ends on one of these is a cut-off sentence ("mera naam or meri bhanji ko"): not worth keeping. */
+    private val danglingEnd = setOf("ko", "ka", "ki", "ke", "or", "aur", "and", "ye", "yeh", "wo", "woh", "mera", "meri", "mere", "se")
 
     private val nameRx = Regex(
         "(?i)(?<!$L)(?:mera\\s+naam|mera\\s+name|meraa\\s+naam|my\\s+name\\s+is)\\s+($WORDS)"
@@ -115,6 +118,9 @@ object LocalMemory {
         if (m != null) {
             val note = m.groupValues[1].trim().trimEnd('.', '!').replace(Regex("\\s+"), " ").take(MAX_TEXT)
             if (note.length < 3) return null
+            if (note.lowercase().substringAfterLast(' ') in danglingEnd) {
+                return Outcome("Ye adhoora lag raha hai. Poora likho, jaise: \"yaad rakho ki meri bhanji ka naam Gaib hai\".", null)
+            }
             val merged = merge(current, listOf(encode("note:" + note.lowercase().take(40), note)))
             return Outcome("Theek hai, yaad rakh liya: $note", merged)
         }

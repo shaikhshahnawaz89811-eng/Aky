@@ -409,7 +409,7 @@ class VoiceAiFragment : Fragment() {
         styleSegment(segLocal, local)
         styleSegment(segGemini, !local)
         brainHint?.text = if (local) {
-            "Offline aur private: text phone se bahar nahi jaata. Chhota 1.5B model hai: jawab CPU par bante hain (dheere), tasveer nahi padhta, aur Hinglish / lambi coding mein Gemini jitna pakka nahi."
+            "Offline aur private: text aur tasveer phone se bahar nahi jaate. Gemma 4 E2B Hindi, English aur tasveer samajhta hai; chhota model hai, to bahut lambi coding mein Gemini jitna pakka nahi."
         } else {
             "Tez aur zyada smart, par internet chahiye aur aapka text (aur bheji gayi image / text file) Google ko jaata hai."
         }

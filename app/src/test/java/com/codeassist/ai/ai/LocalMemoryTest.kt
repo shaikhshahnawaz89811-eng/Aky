@@ -70,4 +70,15 @@ class LocalMemoryTest {
         assertTrue(LocalMemory.block(facts).contains("Pune"))
         assertEquals(facts, LocalMemory.unpack(LocalMemory.pack(facts)))
     }
+
+    @Test fun askingForTheNameIsNotAName() {
+        assertTrue(LocalMemory.extract("Mera naam btao").isEmpty())
+        assertTrue(LocalMemory.extract("mera naam kya hai").isEmpty())
+    }
+
+    @Test fun cutOffNoteIsNotSaved() {
+        val out = LocalMemory.command("Yaad rakhna Mera naam or meri bhanji ko", emptyList())
+        assertNotNull(out)
+        assertNull(out!!.updated)
+    }
 }

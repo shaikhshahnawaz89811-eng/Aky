@@ -591,7 +591,7 @@ decode 47 tok/s on CPU, 3808 / 52 on GPU. A mid-range phone will be slower.
   (the Hinglish few-shot and language retry were Qwen workarounds), `Gguf`.
 - All user-facing "Qwen" strings now say "Gemma". The "Qwen options" screen in Settings (prompt shape, context, threads,
   temperature) no longer does anything.
-- Build tools: AGP 8.5.2 -> 8.10.1, Gradle 8.7 -> 8.11.1, Kotlin 1.9.24 -> 2.2.20, compileSdk 34 -> 36, coroutines 1.8.1 -> 1.11.0
+- Build tools: AGP 8.5.2 -> 8.10.1, Gradle 8.7 -> 8.11.1, Kotlin 1.9.24 -> 2.4.0 (the runtime pulls in kotlin-stdlib 2.4.0, which needs a 2.4 compiler), compileSdk 34 -> 36, coroutines 1.8.1 -> 1.11.0
   (a third-party note says the runtime crashes with NoSuchMethodError on older coroutines). The llama-android dependency is
   removed. `AndroidManifest.xml` asks for `libOpenCL.so` and `libvndksupport.so` (needed for the GPU backend).
   Version 2.0 (code 11).
