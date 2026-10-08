@@ -24,7 +24,8 @@ import java.util.Locale
 
 /**
  * Real voice loop on top of the Android platform engines:
- *   speech in  = android.speech.SpeechRecognizer (live partials + real mic levels)
+ *   speech in  = android.speech.SpeechRecognizer (live partials + real mic levels), or - only when the user
+ *                picked "Offline model" in Voice and AI - the on-device sherpa-onnx engine ([OfflineStt])
  *   speech out = android.speech.tts.TextToSpeech
  * All calls must come from the main thread.
  *
@@ -91,7 +92,13 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         }
 
         fun recognitionAvailable(context: Context): Boolean =
-            SpeechRecognizer.isRecognitionAvailable(context.applicationContext)
+            offlineEngineSelected(context) || SpeechRecognizer.isRecognitionAvailable(context.applicationContext)
+
+        /** True when the user picked the offline model and it (plus the sherpa-onnx library) is installed. */
+        fun offlineEngineSelected(context: Context): Boolean {
+            Store.init(context)
+            return Store.sttEngine == "offline" && OfflineSttStore.ready(context)
+        }
 
         private const val RESUME_TTL_MS = 60_000L
         private const val ANSWER_WINDOW_MS = 10_000L
@@ -116,7 +123,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     /** True while a conversation is open: a voice turn is in progress or a follow-up window may open. */
     val sessionActive: Boolean get() = voiceTurn || continuousOn || state != State.IDLE
 
-    private var recognizer: SpeechRecognizer? = null
+    private var recognizer: SttEngine? = null
+    private var recognizerOffline = false
     private val collected = StringBuilder()
     private var startedAt = 0L
     private var silentRounds = 0
@@ -369,8 +377,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         windowMs: Long = -1L,
         wake: Boolean = false
     ) {
-        if (!SpeechRecognizer.isRecognitionAvailable(app)) {
-            if (!followUp) cb.onMessage("Is phone par speech recognition service nahi hai. Google app install / enable karo.")
+        if (!recognitionAvailable(app)) {
+            if (!followUp) cb.onMessage("Is phone par speech recognition service nahi hai. Google app install / enable karo, ya Voice and AI mein Offline model download karke use karo.")
             continuousOn = false
             voiceTurn = false
             return
@@ -413,10 +421,26 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     }
 
     private fun startRecognizer() {
+        val wantOffline = offlineEngineSelected(app)
+        if (recognizer != null && recognizerOffline != wantOffline) {
+            // the engine was switched in Settings: drop the old one, a new one is made below
+            try {
+                recognizer?.destroy()
+            } catch (_: Exception) {
+                // ignore
+            }
+            recognizer = null
+        }
         val r = recognizer ?: try {
-            SpeechRecognizer.createSpeechRecognizer(app).also {
+            val engine: SttEngine = if (wantOffline) {
+                OfflineStt(app) { message -> if (state == State.LISTENING) fail(message) }
+            } else {
+                PlatformStt(SpeechRecognizer.createSpeechRecognizer(app))
+            }
+            engine.also {
                 it.setRecognitionListener(listener)
                 recognizer = it
+                recognizerOffline = wantOffline
             }
         } catch (e: Exception) {
             fail("Speech recognizer start nahi hua: " + (e.message ?: "unknown error"))
@@ -1020,7 +1044,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
             setState(State.IDLE)
             main.postDelayed(reopenRunnable, 350L)
         } else if (voiceTurn && Store.followUpMs() > 0L && hasMic() &&
-            SpeechRecognizer.isRecognitionAvailable(app)
+            recognitionAvailable(app)
         ) {
             // follow-up window: the mic re-opens without another tap; silence ends it quietly
             setState(State.IDLE)

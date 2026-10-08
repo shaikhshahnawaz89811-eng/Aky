@@ -37,6 +37,13 @@ android {
     }
 
 
+    packaging {
+        jniLibs {
+            // the optional sherpa-onnx AAR and another native dependency may both carry libc++_shared.so
+            pickFirsts += ['**/libc++_shared.so']
+        }
+    }
+
     lint {
         // CI runs lintDebug as its own non-blocking step; lint findings must not stop assembleRelease.
         checkReleaseBuilds = false
@@ -58,6 +65,10 @@ dependencies {
     implementation 'com.google.mlkit:text-recognition:16.0.1'
     // On-device Gemma 4 E2B (.litertlm) through Google's LiteRT-LM runtime. Needs coroutines >= 1.11.0 (see above).
     implementation 'com.google.ai.edge.litertlm:litertlm-android:latest.release'
+
+    // Optional offline speech engine (sherpa-onnx). It is not on Maven: drop sherpa-onnx-<version>.aar into app/libs
+    // (CI downloads it). With no AAR here the app builds and runs exactly as before; see app/libs/README.txt.
+    implementation fileTree(dir: 'libs', include: ['*.aar'])
 
     testImplementation 'junit:junit:4.13.2'
 }

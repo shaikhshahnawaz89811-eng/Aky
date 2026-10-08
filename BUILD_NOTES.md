@@ -614,3 +614,56 @@ decode 47 tok/s on CPU, 3808 / 52 on GPU. A mid-range phone will be slower.
 4. "torch on", "kal subah 6 baje utha dena" -> phone actions. Caption of each reply shows GPU or CPU.
 5. If the first load is slow (up to ~10 s, longer the very first time), that is the runtime preparing its cache.
 6. The old 986 MB Qwen file is still in the app's models folder; delete it by clearing the app's storage or from a file manager.
+
+# Offline speech model (sherpa-onnx, IndicConformer-style) — honest status
+
+## What it is, and why it is not Vosk
+Vosk runs Kaldi models. The model asked for (an AI4Bharat IndicConformer export for sherpa-onnx) is a NeMo CTC ONNX file;
+Vosk cannot load it, only sherpa-onnx can. So the engine slot is built on sherpa-onnx (`OfflineRecognizer`, NeMo CTC).
+The slot is generic: any other NeMo-CTC model (`model.int8.onnx` + `tokens.txt`) works by changing the link.
+A real Vosk engine could be added as a second `SttEngine` later; the interface is ready for it.
+
+## What changed (files)
+- New `voice/SttEngine.kt`: interface with the five calls `VoiceController` already made on `SpeechRecognizer`, plus
+  `PlatformStt` (a pass-through to the Android recognizer = old behaviour, still the default).
+- New `voice/OfflineStt.kt`: the offline engine. Own `AudioRecord` (16 kHz), `EnergyVad` for start / pause, then one model run
+  per utterance; answers through the same `RecognitionListener` callbacks (results, no-match, speech-timeout, errors).
+- New `voice/SherpaBridge.kt`: calls `com.k2fsa.sherpa.onnx.*` by reflection, so the project compiles and runs with NO AAR.
+- New `voice/OfflineSttStore.kt`: model files (`filesDir/stt_offline/`), resumable download, background load, auto-unload after 90 s.
+- New `voice/OfflineSttUrls.kt` (+ `OfflineSttUrlsTest`): link -> two file URLs (HF repo page, folder, or direct .onnx).
+- `VoiceController.kt`: the recognizer field is an `SttEngine`; the engine is chosen in `startRecognizer()`; the three
+  "is recognition available" checks also accept the offline engine. Nothing else in the voice loop was touched.
+- `Store.kt`: `sttEngine` ("platform" default | "offline"), `offlineSttUrl` (empty by default).
+- `VoiceAiFragment.kt`: new section "Offline speech model (sherpa-onnx)": engine picker, model link, download / cancel, delete.
+- `app/build.gradle`: `implementation fileTree(dir: 'libs', include: ['*.aar'])` and a `pickFirsts` for `libc++_shared.so`.
+  `.github/workflows/android-build.yml`: optional step that downloads the AAR (never fails the build). `app/libs/README.txt`.
+
+## Verification status — read first
+- **Nothing here was compiled or run.** There was no Gradle / Kotlin compiler (and no network) where this was written.
+  The URL logic was checked with an equivalent Python port only. Expect to send a build log if something does not compile.
+- **The sherpa-onnx AAR is unverified.** The CI step assumes `https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.39/sherpa-onnx-1.12.39.aar`.
+  The file name `sherpa-onnx-1.12.39.aar` exists in the wild, but that exact release URL was not opened. If the step warns,
+  download an AAR from the sherpa-onnx releases page yourself and put it in `app/libs/`.
+- **Reflection names are from memory** of the sherpa-onnx Kotlin API (`OfflineModelConfig.nemo`, `OfflineNemoEncDecCtcModelConfig.model`,
+  `OfflineRecognizer(assetManager, config)`, `createStream`, `acceptWaveform`, `decode`, `getResult(...).text`). A different
+  AAR version may rename something; the app then shows "Ye sherpa-onnx version app ke code se match nahi karta (<name>)".
+- **No model link is built in.** The line that was pasted ("IndicConformer Hinglish Swift - sherpa-onnx") carried only a title, not a URL.
+  Paste the real link in Voice and AI > Offline speech model > Model link. A silent-failure trap to know about: NeMo exports
+  need ONNX metadata (`normalize_type=per_feature`, `vocab_size`, `subsampling_factor`, `feature_dim=80`); without it a model can
+  load, run and return EMPTY text. If the engine always says "no match", the model file is the first suspect.
+- APK gets about 50-60 MB bigger once the AAR is present (native libraries for all phone architectures).
+
+## Deliberate gaps and limits
+- No live partial text: it is an offline model, the words appear after you stop talking.
+- One utterance is cut at ~28 s (Conformer memory grows with the square of the length: roughly 300-600 MB while running).
+- Endpointing is a simple energy VAD: in a loud room the pause may be detected late. Tapping the mic again sends at once.
+- The wake word (`VadGatedWakeWord`) and barge-in still use the Android recognizer / their own mic code: unchanged.
+- "Speech language" is ignored while the offline engine is on; the model decides the language and script.
+- Hinglish: whether text comes out in Devanagari or Roman depends on the model, not on the app.
+
+## Phone check
+1. Settings > Voice and AI > Offline speech model: Model link -> paste the link -> Model (tap) -> Download (Wi-Fi, ~140-190 MB).
+2. "Engine library" must say "sherpa-onnx · mila". If it says "Nahi mila (AAR)", the AAR is not in the APK.
+3. Speech engine -> Offline model. Tap the mic in chat, say a sentence, stop: the text appears after a second or two.
+4. Switch the engine back to Android (Google): voice must behave exactly as before.
+5. Delete model: files go, the engine falls back to Android.

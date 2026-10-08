@@ -39,6 +39,20 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      # Optional offline-speech engine. sherpa-onnx is not on Maven, so its AAR is fetched from the GitHub release.
+      # If the download fails the build still succeeds: the app just reports the offline engine as "not installed".
+      - name: Fetch sherpa-onnx AAR (optional)
+        run: |
+          mkdir -p app/libs
+          if ls app/libs/*.aar >/dev/null 2>&1; then
+            echo "AAR already in app/libs, skipping download"
+          else
+            VER=1.12.39
+            curl -fL --retry 3 -o "app/libs/sherpa-onnx-$VER.aar" \
+              "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$VER/sherpa-onnx-$VER.aar" \
+              || { echo "::warning::sherpa-onnx AAR download failed; offline speech engine stays disabled"; rm -f "app/libs/sherpa-onnx-$VER.aar"; }
+          fi
+
       - name: Run lint checks
         run: ./gradlew lintDebug --continue || true
 

@@ -42,6 +42,9 @@ import com.codeassist.ai.service.AssistantService
 import com.codeassist.ai.service.BatterySetup
 import com.codeassist.ai.service.HandsFree
 import com.codeassist.ai.service.HealthCheck
+import com.codeassist.ai.voice.OfflineSttStore
+import com.codeassist.ai.voice.OfflineSttUrls
+import com.codeassist.ai.voice.SherpaBridge
 import com.codeassist.ai.voice.VoiceController
 import com.codeassist.ai.voice.WakeCoordinator
 import com.codeassist.ai.voice.WakeMatcher
@@ -117,6 +120,12 @@ class VoiceAiFragment : Fragment() {
     private lateinit var wakePermissions: ActivityResultLauncher<Array<String>>
     private var wakeSwitch: SwitchCompat? = null
     private var settingWakeSwitch = false
+    private var offlineEngineValue: TextView? = null
+    private var offlineLinkValue: TextView? = null
+    private var offlineStatusValue: TextView? = null
+    private var shownOfflineError: String? = null
+    private var offlineWasDownloading = false
+    private val offlineListener: () -> Unit = { onOfflineStateChanged() }
     private val moduleListener: () -> Unit = { renderLocal(); renderBrain() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -148,11 +157,17 @@ class VoiceAiFragment : Fragment() {
             requireActivity().onBackPressedDispatcher.onBackPressed()
         }
         Modules.addListener(moduleListener)
+        OfflineSttStore.listener = offlineListener
+        offlineWasDownloading = OfflineSttStore.isDownloading()
         build()
     }
 
     override fun onDestroyView() {
         Modules.removeListener(moduleListener)
+        if (OfflineSttStore.listener === offlineListener) OfflineSttStore.listener = null
+        offlineEngineValue = null
+        offlineLinkValue = null
+        offlineStatusValue = null
         uiScope?.cancel()
         uiScope = null
         voice?.destroy()
@@ -291,7 +306,11 @@ class VoiceAiFragment : Fragment() {
         card {
             infoRow(
                 R.drawable.ic_mic, "Recognizer",
-                if (VoiceController.recognitionAvailable(requireContext())) "Android · available" else "Not available"
+                when {
+                    VoiceController.offlineEngineSelected(requireContext()) -> "Offline model · active"
+                    VoiceController.recognitionAvailable(requireContext()) -> "Android · available"
+                    else -> "Not available"
+                }
             )
             valueRow(R.drawable.ic_globe, "Speech language", sttLabel()) { anchor, tv ->
                 popup(anchor, sttOptions.map { it.first }, sttLabel()) { picked ->
@@ -304,6 +323,9 @@ class VoiceAiFragment : Fragment() {
             }
             linkRow(R.drawable.ic_upload, "Offline language packs") { openVoiceInputSettings() }
         }
+
+        section("Offline speech model (sherpa-onnx)")
+        card { offlineSttRows() }
 
         section("Voice")
         card {
@@ -1083,6 +1105,187 @@ class VoiceAiFragment : Fragment() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    // ---------- offline speech model (sherpa-onnx) ----------
+
+    private val offlineEngineOptions = listOf("Android (Google)", "Offline model")
+
+    private fun offlineEngineLabel(): String =
+        if (Store.sttEngine == "offline") offlineEngineOptions[1] else offlineEngineOptions[0]
+
+    private fun offlineLinkLabel(): String {
+        val url = Store.offlineSttUrl
+        return if (url.isBlank()) "Link daalo" else OfflineSttUrls.short(url)
+    }
+
+    private fun offlineStatusText(): String {
+        val s = OfflineSttStore.state
+        return when (s.phase) {
+            OfflineSttStore.Phase.DOWNLOADING ->
+                if (s.total > 0L) "Download " + (s.done * 100L / s.total).toInt() + "%" else "Download " + Modules.fmt(s.done)
+            OfflineSttStore.Phase.ERROR -> "Error · dobara dabao"
+            OfflineSttStore.Phase.IDLE ->
+                if (OfflineSttStore.installed(requireContext())) {
+                    "Installed · " + Modules.fmt(OfflineSttStore.installedBytes(requireContext()))
+                } else {
+                    "Download nahi hua"
+                }
+        }
+    }
+
+    private fun offlineSttRows() {
+        infoRow(
+            R.drawable.ic_settings, "Engine library",
+            if (SherpaBridge.isPresent()) "sherpa-onnx · mila" else "Nahi mila (AAR)"
+        )
+        offlineEngineValue = valueRow(R.drawable.ic_mic, "Speech engine", offlineEngineLabel()) { anchor, tv ->
+            popup(anchor, offlineEngineOptions, offlineEngineLabel()) { picked -> chooseOfflineEngine(picked, tv) }
+        }
+        offlineLinkValue = valueRow(R.drawable.ic_globe, "Model link", offlineLinkLabel()) { _, _ -> editOfflineLink() }
+        offlineStatusValue = valueRow(R.drawable.ic_upload, "Model", offlineStatusText()) { _, _ -> onOfflineModelTap() }
+        linkRow(R.drawable.ic_delete, "Model delete karo") { confirmDeleteOfflineModel() }
+        noteRow(
+            "Opt-in. Default Android wala recognizer hi rehta hai; ye sirf tab chalta hai jab Speech engine = Offline model ho. " +
+                "Ye sherpa-onnx ke NeMo-CTC models (jaise IndicConformer) chalata hai, Vosk / Kaldi models nahi. " +
+                "Link badal sakte ho: Hugging Face repo ka link, folder ka link (model.int8.onnx + tokens.txt), ya direct .onnx file ka link. " +
+                "Offline model live partial text nahi deta: bolna band karne ke baad poora text aata hai. Ek baar mein ~28 second tak sunta hai. " +
+                "Chalte waqt 300-600 MB RAM leta hai aur 90 second khaali rehne par khud unload ho jaata hai. " +
+                "Offline model ke saath upar wali Speech language ka asar nahi hota: model apni bhasha / script mein likhta hai. " +
+                "Wake word ab bhi Android ke recognizer se chalta hai."
+        )
+    }
+
+    private fun chooseOfflineEngine(picked: String, tv: TextView) {
+        if (picked == offlineEngineOptions[1]) {
+            if (!SherpaBridge.isPresent()) {
+                toast("sherpa-onnx library app mein nahi hai. BUILD_NOTES mein AAR wala step dekho.")
+                return
+            }
+            if (!OfflineSttStore.installed(requireContext())) {
+                toast("Pehle model download karo.")
+                return
+            }
+            Store.sttEngine = "offline"
+        } else {
+            Store.sttEngine = "platform"
+        }
+        tv.text = offlineEngineLabel()
+    }
+
+    private fun editOfflineLink() {
+        val ctx = requireContext()
+        val input = EditText(ctx).apply {
+            setText(Store.offlineSttUrl)
+            hint = "https://huggingface.co/..."
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(0xFFE8EEF5.toInt())
+            textSize = 13.5f
+        }
+        val holder = FrameLayout(ctx).apply {
+            setPadding(dp(22), dp(10), dp(22), 0)
+            addView(input)
+        }
+        AlertDialog.Builder(ctx)
+            .setTitle("Offline model link")
+            .setMessage("HF repo ka link, folder ka link ya direct .onnx link. Folder mein model.int8.onnx aur tokens.txt hona chahiye.")
+            .setView(holder)
+            .setPositiveButton("Save") { _, _ ->
+                val text = input.text.toString().trim()
+                if (text.isNotEmpty() && OfflineSttUrls.plan(text) == null) {
+                    toast("Link https:// se shuru hona chahiye aur poora hona chahiye.")
+                } else {
+                    Store.offlineSttUrl = text
+                    offlineLinkValue?.text = offlineLinkLabel()
+                }
+            }
+            .setNeutralButton("Clear") { _, _ ->
+                Store.offlineSttUrl = ""
+                offlineLinkValue?.text = offlineLinkLabel()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun onOfflineModelTap() {
+        val ctx = requireContext()
+        when {
+            OfflineSttStore.isDownloading() ->
+                AlertDialog.Builder(ctx)
+                    .setTitle("Download chal raha hai")
+                    .setMessage("Rok dein? Aadha download phone par rehta hai, agli baar wahin se resume hoga.")
+                    .setPositiveButton("Rok do") { _, _ -> OfflineSttStore.cancelDownload() }
+                    .setNegativeButton("Chalne do", null)
+                    .show()
+            OfflineSttStore.installed(ctx) ->
+                AlertDialog.Builder(ctx)
+                    .setTitle("Model installed hai")
+                    .setMessage("Dobara download karoge toh purana model replace ho jaayega (naya link ho toh pehle link badlo).")
+                    .setPositiveButton("Dobara download") { _, _ -> startOfflineDownload() }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            else -> startOfflineDownload()
+        }
+    }
+
+    private fun startOfflineDownload() {
+        val ctx = requireContext()
+        val plan = OfflineSttUrls.plan(Store.offlineSttUrl)
+        if (plan == null) {
+            toast("Pehle Model link daalo.")
+            editOfflineLink()
+            return
+        }
+        val note = StringBuilder("Size lagbhag 140-190 MB.")
+        if (Modules.isMetered()) note.append(" Abhi mobile data par ho, WiFi behtar rahega.")
+        if (!SherpaBridge.isPresent()) note.append("\n\nDhyan: sherpa-onnx library app mein nahi hai, model download hoga par chalega tab jab AAR add hoga.")
+        AlertDialog.Builder(ctx)
+            .setTitle("Offline model download")
+            .setMessage(note.toString())
+            .setPositiveButton("Download") { _, _ ->
+                shownOfflineError = null
+                OfflineSttStore.startDownload(ctx, plan)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmDeleteOfflineModel() {
+        val ctx = requireContext()
+        if (!OfflineSttStore.hasAnyFiles(ctx)) {
+            toast("Koi offline model installed nahi hai.")
+            return
+        }
+        AlertDialog.Builder(ctx)
+            .setTitle("Offline model delete karein?")
+            .setMessage("Model files phone se hat jaayengi. Speech engine wapas Android par chala jaayega.")
+            .setPositiveButton("Delete") { _, _ ->
+                OfflineSttStore.delete(ctx)
+                Store.sttEngine = "platform"
+                offlineEngineValue?.text = offlineEngineLabel()
+                offlineStatusValue?.text = "Download nahi hua"
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun onOfflineStateChanged() {
+        if (view == null || context == null) return
+        val s = OfflineSttStore.state
+        offlineStatusValue?.text = offlineStatusText()
+        val message = s.message
+        if (s.phase == OfflineSttStore.Phase.ERROR && message != null && message != shownOfflineError) {
+            shownOfflineError = message
+            Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
+        }
+        val downloading = s.phase == OfflineSttStore.Phase.DOWNLOADING
+        if (offlineWasDownloading && !downloading && s.phase == OfflineSttStore.Phase.IDLE &&
+            OfflineSttStore.installed(requireContext())
+        ) {
+            Toast.makeText(requireContext(), "Model ready. Speech engine mein Offline model chuno.", Toast.LENGTH_LONG).show()
+        }
+        offlineWasDownloading = downloading
     }
 
     // ---------- voice rows ----------

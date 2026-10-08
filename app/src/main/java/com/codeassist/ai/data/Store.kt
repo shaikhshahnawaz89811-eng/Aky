@@ -205,6 +205,16 @@ object Store {
         get() = prefs.getBoolean("stt_offline", false)
         set(v) = prefs.edit().putBoolean("stt_offline", v).apply()
 
+    /** "platform" = Android / Google speech service (default) | "offline" = on-device sherpa-onnx model. */
+    var sttEngine: String
+        get() = prefs.getString("stt_engine", "platform") ?: "platform"
+        set(v) = prefs.edit().putString("stt_engine", v).apply()
+
+    /** Link the offline speech model is downloaded from (a folder, a Hugging Face repo page or a direct .onnx file). */
+    var offlineSttUrl: String
+        get() = prefs.getString("stt_offline_url", "") ?: ""
+        set(v) = prefs.edit().putString("stt_offline_url", v.trim()).apply()
+
     var ttsSpeed: Float
         get() = prefs.getFloat("tts_speed", 1.0f)
         set(v) = prefs.edit().putFloat("tts_speed", v).apply()
