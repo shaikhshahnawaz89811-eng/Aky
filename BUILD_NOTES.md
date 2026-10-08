@@ -667,3 +667,31 @@ A real Vosk engine could be added as a second `SttEngine` later; the interface i
 3. Speech engine -> Offline model. Tap the mic in chat, say a sentence, stop: the text appears after a second or two.
 4. Switch the engine back to Android (Google): voice must behave exactly as before.
 5. Delete model: files go, the engine falls back to Android.
+
+
+---
+
+# Offline speech model: Import / Load / Unload (v4)
+
+The offline speech model now has a card in Settings > Voice and AI, built like the Gemma card, instead of only a
+"Model link" row that downloaded straight from a URL.
+
+| Status badge | Buttons |
+|---|---|
+| Not imported | Import files, Download |
+| Importing / Downloading | Cancel |
+| Unloaded | Load, Import files, Delete |
+| Loading | Loading... (disabled) |
+| Loaded | Unload, Delete (asks to Unload first) |
+| Error | message in red; Load (if files are there) or Import files / Download |
+
+- **Import files**: pick the model (any `*.onnx`, copied as `model.int8.onnx`) and `tokens.txt` together in the file picker.
+  Sizes and "is this really the file" (webpage / git-lfs pointer) are checked before anything old is replaced.
+  A single file can be picked if the other one is already installed.
+- **Download** is still there, using the "Download link (optional)" row, but it is no longer the main path.
+- **Load** keeps the model in RAM until **Unload** (no 90 s timeout). Without Load the mic still loads it on first use
+  and drops it after ~90 s idle, and the badge follows (Loaded -> Unloaded).
+- Unload is refused while the mic is listening. Delete is refused while loaded or while a copy / download runs.
+- New pure-Kotlin `OfflineSttImport` (which picked file is model / tokens) with `OfflineSttImportTest`.
+
+Status: written and bracket-checked, **not compiled** (no Kotlin compiler in the sandbox). Send the CI log if anything fails.

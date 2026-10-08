@@ -122,9 +122,11 @@ class VoiceAiFragment : Fragment() {
     private var settingWakeSwitch = false
     private var offlineEngineValue: TextView? = null
     private var offlineLinkValue: TextView? = null
-    private var offlineStatusValue: TextView? = null
+    private var offlineCard: Card? = null
+    private var offlineButtonsKey: String? = null
     private var shownOfflineError: String? = null
-    private var offlineWasDownloading = false
+    private var offlineWasBusy = false
+    private lateinit var pickOfflineFiles: ActivityResultLauncher<Array<String>>
     private val offlineListener: () -> Unit = { onOfflineStateChanged() }
     private val moduleListener: () -> Unit = { renderLocal(); renderBrain() }
 
@@ -132,6 +134,12 @@ class VoiceAiFragment : Fragment() {
         super.onCreate(savedInstanceState)
         pickModel = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) Modules.startImport(uri)
+        }
+        pickOfflineFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNotEmpty() && context != null) {
+                shownOfflineError = null
+                OfflineSttStore.startImport(requireContext(), uris)
+            }
         }
         wakePermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
             if (view != null) {
@@ -158,7 +166,7 @@ class VoiceAiFragment : Fragment() {
         }
         Modules.addListener(moduleListener)
         OfflineSttStore.listener = offlineListener
-        offlineWasDownloading = OfflineSttStore.isDownloading()
+        offlineWasBusy = OfflineSttStore.isDownloading() || OfflineSttStore.isImporting()
         build()
     }
 
@@ -167,7 +175,8 @@ class VoiceAiFragment : Fragment() {
         if (OfflineSttStore.listener === offlineListener) OfflineSttStore.listener = null
         offlineEngineValue = null
         offlineLinkValue = null
-        offlineStatusValue = null
+        offlineCard = null
+        offlineButtonsKey = null
         uiScope?.cancel()
         uiScope = null
         voice?.destroy()
@@ -325,6 +334,8 @@ class VoiceAiFragment : Fragment() {
         }
 
         section("Offline speech model (sherpa-onnx)")
+        offlineButtonsKey = null
+        offlineCard = newCard()
         card { offlineSttRows() }
 
         section("Voice")
@@ -370,6 +381,7 @@ class VoiceAiFragment : Fragment() {
         renderLocal()
         renderGemini()
         renderEleven()
+        renderOfflineStt()
     }
 
     // ---------- brain selector ----------
@@ -1119,19 +1131,114 @@ class VoiceAiFragment : Fragment() {
         return if (url.isBlank()) "Link daalo" else OfflineSttUrls.short(url)
     }
 
-    private fun offlineStatusText(): String {
-        val s = OfflineSttStore.state
-        return when (s.phase) {
-            OfflineSttStore.Phase.DOWNLOADING ->
-                if (s.total > 0L) "Download " + (s.done * 100L / s.total).toInt() + "%" else "Download " + Modules.fmt(s.done)
-            OfflineSttStore.Phase.ERROR -> "Error · dobara dabao"
-            OfflineSttStore.Phase.IDLE ->
-                if (OfflineSttStore.installed(requireContext())) {
-                    "Installed · " + Modules.fmt(OfflineSttStore.installedBytes(requireContext()))
-                } else {
-                    "Download nahi hua"
-                }
+    /** The module card: same badge / progress / buttons as the Gemma card (Import, Download, Load, Unload, Delete). */
+    private fun renderOfflineStt() {
+        val c = offlineCard ?: return
+        if (view == null || context == null) return
+        val ctx = requireContext()
+        val status = OfflineSttStore.status(ctx)
+        val installed = OfflineSttStore.installed(ctx)
+        val leftover = OfflineSttStore.hasAnyFiles(ctx)
+
+        c.icon.setImageResource(R.drawable.ic_mic)
+        c.title.text = "Offline speech model"
+        c.sub.text = "sherpa-onnx · NeMo CTC (IndicConformer) · phone par hi chalta hai"
+
+        when (status) {
+            OfflineSttStore.Status.NOT_IMPORTED -> setBadge(c.badge, "Not imported", GREY)
+            OfflineSttStore.Status.DOWNLOADING -> setBadge(c.badge, "Downloading", BLUE)
+            OfflineSttStore.Status.IMPORTING -> setBadge(c.badge, "Importing", BLUE)
+            OfflineSttStore.Status.UNLOADED -> setBadge(c.badge, "Unloaded", GREY)
+            OfflineSttStore.Status.LOADING -> setBadge(c.badge, "Loading", PURPLE)
+            OfflineSttStore.Status.LOADED -> setBadge(c.badge, "Loaded", GREEN)
+            OfflineSttStore.Status.ERROR -> setBadge(c.badge, "Error", RED)
         }
+
+        val busy = status == OfflineSttStore.Status.DOWNLOADING || status == OfflineSttStore.Status.IMPORTING
+        if (!busy && installed) {
+            c.detail.visibility = View.VISIBLE
+            c.detail.text = OfflineSttUrls.MODEL_NAME + " + " + OfflineSttUrls.TOKENS_NAME + "\n" +
+                Modules.fmt(OfflineSttStore.installedBytes(ctx)) + " · loaded hone par ~300-600 MB RAM"
+        } else if (!busy && leftover) {
+            c.detail.visibility = View.VISIBLE
+            c.detail.text = "Adhuri file phone mein padi hai · " + Modules.fmt(OfflineSttStore.filesBytes(ctx))
+        } else {
+            c.detail.visibility = View.GONE
+        }
+
+        c.progressBox.visibility = if (busy) View.VISIBLE else View.GONE
+        if (busy) {
+            val s = OfflineSttStore.state
+            val what = if (status == OfflineSttStore.Status.DOWNLOADING) "Download" else "Copy aur check"
+            if (s.total > 0L) {
+                c.progressLabel.text = what + " · " + Modules.fmt(s.done) + " / " + Modules.fmt(s.total)
+                c.progressPercent.text = (s.done * 100L / s.total).toString() + "%"
+                c.progressBar.progress = ((s.done * 1000L) / s.total).toInt().coerceIn(0, 1000)
+            } else {
+                c.progressLabel.text = what + (if (s.done > 0L) " · " + Modules.fmt(s.done) else "")
+                c.progressPercent.text = ""
+                c.progressBar.progress = 0
+            }
+        }
+
+        val msg = OfflineSttStore.state.message
+        if (status == OfflineSttStore.Status.ERROR && !msg.isNullOrBlank()) {
+            c.message.visibility = View.VISIBLE
+            c.message.text = msg
+            c.message.setTextColor(RED)
+        } else if (installed && !SherpaBridge.isPresent()) {
+            c.message.visibility = View.VISIBLE
+            c.message.text = "sherpa-onnx library app mein nahi hai (app/libs mein AAR chahiye). Model phone mein rahega, Load tab chalega jab AAR add hoga."
+            c.message.setTextColor(GREY)
+        } else if (status == OfflineSttStore.Status.NOT_IMPORTED) {
+            c.message.visibility = View.VISIBLE
+            c.message.text = "Phone se model (.onnx) aur tokens.txt dono chuno (Import files). Link se laana ho toh Download."
+            c.message.setTextColor(GREY)
+        } else {
+            c.message.visibility = View.GONE
+        }
+
+        // the buttons are rebuilt only when the set of buttons changes, so a tap is never lost to the 300 ms progress updates
+        val key = status.name + "|" + installed + "|" + leftover
+        if (key == offlineButtonsKey) return
+        offlineButtonsKey = key
+
+        val importBtn = Btn("Import files", if (installed) GHOST else PRIMARY) {
+            pickOfflineFiles.launch(arrayOf("*/*"))
+        }
+        val downloadBtn = Btn("Download", GHOST) { startOfflineDownload() }
+        val loadBtn = Btn("Load", PRIMARY) { OfflineSttStore.requestLoad(requireContext())?.let { toast(it) } }
+        val deleteBtn = Btn("Delete", DANGER, dim = status == OfflineSttStore.Status.LOADED) { confirmDeleteOfflineModel() }
+
+        val specs = ArrayList<Btn>()
+        when (status) {
+            OfflineSttStore.Status.DOWNLOADING, OfflineSttStore.Status.IMPORTING -> {
+                specs.add(Btn("Cancel", GHOST) { OfflineSttStore.cancelDownload() })
+            }
+            OfflineSttStore.Status.LOADING -> {
+                specs.add(Btn("Loading…", PRIMARY, enabled = false, dim = true) {})
+            }
+            OfflineSttStore.Status.LOADED -> {
+                specs.add(Btn("Unload", GHOST) { OfflineSttStore.requestUnload()?.let { toast(it) } })
+                specs.add(deleteBtn)
+            }
+            OfflineSttStore.Status.UNLOADED -> {
+                specs.add(loadBtn)
+                specs.add(importBtn)
+                specs.add(deleteBtn)
+            }
+            OfflineSttStore.Status.NOT_IMPORTED, OfflineSttStore.Status.ERROR -> {
+                if (installed) {
+                    specs.add(loadBtn)
+                    specs.add(importBtn)
+                } else {
+                    specs.add(importBtn)
+                    specs.add(downloadBtn)
+                }
+                if (installed || leftover) specs.add(deleteBtn)
+            }
+        }
+        setButtons(c.buttons, specs)
     }
 
     private fun offlineSttRows() {
@@ -1142,15 +1249,14 @@ class VoiceAiFragment : Fragment() {
         offlineEngineValue = valueRow(R.drawable.ic_mic, "Speech engine", offlineEngineLabel()) { anchor, tv ->
             popup(anchor, offlineEngineOptions, offlineEngineLabel()) { picked -> chooseOfflineEngine(picked, tv) }
         }
-        offlineLinkValue = valueRow(R.drawable.ic_globe, "Model link", offlineLinkLabel()) { _, _ -> editOfflineLink() }
-        offlineStatusValue = valueRow(R.drawable.ic_upload, "Model", offlineStatusText()) { _, _ -> onOfflineModelTap() }
-        linkRow(R.drawable.ic_delete, "Model delete karo") { confirmDeleteOfflineModel() }
+        offlineLinkValue = valueRow(R.drawable.ic_globe, "Download link (optional)", offlineLinkLabel()) { _, _ -> editOfflineLink() }
         noteRow(
             "Opt-in. Default Android wala recognizer hi rehta hai; ye sirf tab chalta hai jab Speech engine = Offline model ho. " +
+                "Model phone se Import karo (model .onnx + tokens.txt chuno) ya link se Download. " +
                 "Ye sherpa-onnx ke NeMo-CTC models (jaise IndicConformer) chalata hai, Vosk / Kaldi models nahi. " +
-                "Link badal sakte ho: Hugging Face repo ka link, folder ka link (model.int8.onnx + tokens.txt), ya direct .onnx file ka link. " +
+                "Load dabane par model RAM mein rehta hai jab tak Unload na karo. Load na karo toh bolte waqt apne aap load hota hai " +
+                "aur 90 second khaali rehne par khud unload ho jaata hai. " +
                 "Offline model live partial text nahi deta: bolna band karne ke baad poora text aata hai. Ek baar mein ~28 second tak sunta hai. " +
-                "Chalte waqt 300-600 MB RAM leta hai aur 90 second khaali rehne par khud unload ho jaata hai. " +
                 "Offline model ke saath upar wali Speech language ka asar nahi hota: model apni bhasha / script mein likhta hai. " +
                 "Wake word ab bhi Android ke recognizer se chalta hai."
         )
@@ -1163,7 +1269,7 @@ class VoiceAiFragment : Fragment() {
                 return
             }
             if (!OfflineSttStore.installed(requireContext())) {
-                toast("Pehle model download karo.")
+                toast("Pehle model Import ya Download karo.")
                 return
             }
             Store.sttEngine = "offline"
@@ -1188,8 +1294,8 @@ class VoiceAiFragment : Fragment() {
             addView(input)
         }
         AlertDialog.Builder(ctx)
-            .setTitle("Offline model link")
-            .setMessage("HF repo ka link, folder ka link ya direct .onnx link. Folder mein model.int8.onnx aur tokens.txt hona chahiye.")
+            .setTitle("Download link")
+            .setMessage("Sirf Download button ke liye. HF repo ka link, folder ka link ya direct .onnx link. Folder mein model.int8.onnx aur tokens.txt hona chahiye.")
             .setView(holder)
             .setPositiveButton("Save") { _, _ ->
                 val text = input.text.toString().trim()
@@ -1208,32 +1314,11 @@ class VoiceAiFragment : Fragment() {
             .show()
     }
 
-    private fun onOfflineModelTap() {
-        val ctx = requireContext()
-        when {
-            OfflineSttStore.isDownloading() ->
-                AlertDialog.Builder(ctx)
-                    .setTitle("Download chal raha hai")
-                    .setMessage("Rok dein? Aadha download phone par rehta hai, agli baar wahin se resume hoga.")
-                    .setPositiveButton("Rok do") { _, _ -> OfflineSttStore.cancelDownload() }
-                    .setNegativeButton("Chalne do", null)
-                    .show()
-            OfflineSttStore.installed(ctx) ->
-                AlertDialog.Builder(ctx)
-                    .setTitle("Model installed hai")
-                    .setMessage("Dobara download karoge toh purana model replace ho jaayega (naya link ho toh pehle link badlo).")
-                    .setPositiveButton("Dobara download") { _, _ -> startOfflineDownload() }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            else -> startOfflineDownload()
-        }
-    }
-
     private fun startOfflineDownload() {
         val ctx = requireContext()
         val plan = OfflineSttUrls.plan(Store.offlineSttUrl)
         if (plan == null) {
-            toast("Pehle Model link daalo.")
+            toast("Download ke liye pehle link daalo (ya Import files se phone ki file lo).")
             editOfflineLink()
             return
         }
@@ -1253,18 +1338,25 @@ class VoiceAiFragment : Fragment() {
 
     private fun confirmDeleteOfflineModel() {
         val ctx = requireContext()
+        if (OfflineSttStore.isLoaded() || OfflineSttStore.isLoading()) {
+            toast("Pehle Unload karo, phir Delete.")
+            return
+        }
         if (!OfflineSttStore.hasAnyFiles(ctx)) {
             toast("Koi offline model installed nahi hai.")
             return
         }
         AlertDialog.Builder(ctx)
             .setTitle("Offline model delete karein?")
-            .setMessage("Model files phone se hat jaayengi. Speech engine wapas Android par chala jaayega.")
+            .setMessage("Model files phone se hat jaayengi. Dobara chahiye toh Import ya Download karna hoga. Speech engine wapas Android par chala jaayega.")
             .setPositiveButton("Delete") { _, _ ->
-                OfflineSttStore.delete(ctx)
-                Store.sttEngine = "platform"
-                offlineEngineValue?.text = offlineEngineLabel()
-                offlineStatusValue?.text = "Download nahi hua"
+                val refused = OfflineSttStore.requestDelete(ctx)
+                if (refused != null) {
+                    toast(refused)
+                } else {
+                    Store.sttEngine = "platform"
+                    offlineEngineValue?.text = offlineEngineLabel()
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1273,19 +1365,19 @@ class VoiceAiFragment : Fragment() {
     private fun onOfflineStateChanged() {
         if (view == null || context == null) return
         val s = OfflineSttStore.state
-        offlineStatusValue?.text = offlineStatusText()
+        renderOfflineStt()
         val message = s.message
         if (s.phase == OfflineSttStore.Phase.ERROR && message != null && message != shownOfflineError) {
             shownOfflineError = message
             Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show()
         }
-        val downloading = s.phase == OfflineSttStore.Phase.DOWNLOADING
-        if (offlineWasDownloading && !downloading && s.phase == OfflineSttStore.Phase.IDLE &&
+        val busyNow = s.phase == OfflineSttStore.Phase.DOWNLOADING || s.phase == OfflineSttStore.Phase.IMPORTING
+        if (offlineWasBusy && !busyNow && s.phase == OfflineSttStore.Phase.IDLE &&
             OfflineSttStore.installed(requireContext())
         ) {
-            Toast.makeText(requireContext(), "Model ready. Speech engine mein Offline model chuno.", Toast.LENGTH_LONG).show()
+            Toast.makeText(requireContext(), "Model ready. Load dabao, phir Speech engine mein Offline model chuno.", Toast.LENGTH_LONG).show()
         }
-        offlineWasDownloading = downloading
+        offlineWasBusy = busyNow
     }
 
     // ---------- voice rows ----------
