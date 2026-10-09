@@ -31,6 +31,11 @@ import com.codeassist.ai.data.Store
  *  - the recognizer may play its start beep on some phones.
  * The audio is only measured or recognized on the device; nothing is recorded, stored or sent.
  *
+ * Language pack (v7): at start the engine asks Android which on-device packs are installed ([WakePacks], choice in
+ * [WakeLang]): `en-IN` first, then `en-US` / `en-GB` / any English. If none is installed it asks Android to download
+ * one and stops with a clear message (the download needs network and takes a while). If the recognizer still answers
+ * error 12 / 13 for a language, that language is dropped and the next one is tried.
+ *
  * [standalone] = used by the wake test screen: it never pauses for the shared "busy" flag and never
  * registers itself as the service's gate.
  */
@@ -55,6 +60,11 @@ class VadGatedWakeWord(
         private const val STORM_BACKOFF_MS = 30_000L
         private const val FLUSH_MS = 300_000L
         private const val POST_WAKE_REST_MS = 3000L
+        private const val CHECK_TIMEOUT_MS = 3000L
+
+        /** (phrase, language) that worked last time: saves one pack check per wake-test trial. */
+        @Volatile
+        private var langCache: Pair<String, String>? = null
     }
 
     private class MonitorRun {
@@ -80,6 +90,13 @@ class VadGatedWakeWord(
     private val attempts = ArrayList<Long>()
     private var backoffUntil = 0L
 
+    // language pack state (see WakeLang / WakePacks)
+    private var lang: String? = null
+    private var attemptLang = ""
+    private val badLangs = HashSet<String>()
+    private var checking = false
+    private var checkToken = 0
+
     // ---------- WakeWordEngine ----------
 
     override fun start() {
@@ -90,12 +107,17 @@ class VadGatedWakeWord(
             busy = WakeCoordinator.isBusy()
         }
         setStatus("Shuru ho raha hai")
+        lang = null
+        badLangs.clear()
         scheduleMonitor(0L)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) prepareLanguage()
     }
 
     override fun stop() {
         started = false
         main.removeCallbacksAndMessages(null)
+        checkToken += 1
+        checking = false
         stopMonitor(300L)
         destroyRecognizer()
         if (WakeCoordinator.gate === this) WakeCoordinator.gate = null
@@ -294,22 +316,30 @@ class VadGatedWakeWord(
     }
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun startRecognizer() {
-        val r = recognizer ?: try {
+    private fun ensureRecognizer(): SpeechRecognizer? {
+        recognizer?.let { return it }
+        return try {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(app).also {
                 it.setRecognitionListener(recListener)
                 recognizer = it
             }
         } catch (e: Throwable) {
             fatal("On-device recognizer start nahi hua: " + (e.message ?: e.javaClass.simpleName))
-            return
+            null
         }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun startRecognizer() {
+        val r = ensureRecognizer() ?: return
+        val useLang = currentLang()
+        attemptLang = useLang
         recognizerActive = true
         matched = null
         matchedHeard = ""
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, wakeLanguage(Store.wakePhrase))
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, useLang)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
@@ -341,8 +371,127 @@ class VadGatedWakeWord(
 
     private fun level(): WakeMatcher.Level = WakeMatcher.levelOf(Store.wakeSensitivity)
 
-    private fun wakeLanguage(phrase: String): String =
-        if (phrase.any { it in '\u0900'..'\u097F' }) "hi-IN" else "en-IN"
+    // ---------- language pack (Android 13+) ----------
+
+    /** Language for the next recognizer run: the checked one, else the best candidate not known to fail. */
+    private fun currentLang(): String {
+        lang?.let { return it }
+        val c = WakeLang.candidates(Store.wakePhrase)
+        return c.firstOrNull { WakeLang.norm(it) !in badLangs } ?: c.first()
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun prepareLanguage() {
+        val phrase = Store.wakePhrase
+        val hit = langCache
+        if (hit != null && hit.first == phrase && WakeLang.norm(hit.second) !in badLangs) {
+            lang = hit.second
+            return
+        }
+        checkPacks(null)
+    }
+
+    /**
+     * Ask Android which on-device packs are installed and pick the wake language. [then] runs once one is chosen.
+     * Nothing installed: ask Android to download one and stop with a message (the service / the wake test show it).
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun checkPacks(then: (() -> Unit)?) {
+        val r = ensureRecognizer() ?: return
+        val phrase = Store.wakePhrase
+        val cands = WakeLang.candidates(phrase)
+        val first = cands.firstOrNull { WakeLang.norm(it) !in badLangs } ?: cands.first()
+        val token = checkToken + 1
+        checkToken = token
+        checking = true
+        val timeout = Runnable {
+            if (checkToken == token && checking) {
+                checking = false
+                applyUnknown(cands, then)
+            }
+        }
+        main.postDelayed(timeout, CHECK_TIMEOUT_MS)
+        WakePacks.query(r, app, first) { state ->
+            if (checkToken != token || !checking || !started) return@query
+            checking = false
+            main.removeCallbacks(timeout)
+            if (state == null) {
+                applyUnknown(cands, then)
+                return@query
+            }
+            val installed = WakeLang.pickInstalled(cands, state.installed, badLangs)
+            if (installed != null) {
+                lang = installed
+                langCache = phrase to installed
+                then?.invoke()
+                return@query
+            }
+            val pending = WakeLang.pickPending(cands, state.pending, badLangs)
+            if (pending != null) {
+                fatal(
+                    "Wake word ka " + WakeLang.label(pending) + " speech pack download ho raha hai. " +
+                        "Wi-Fi par thodi der ruko, phir dobara try karo."
+                )
+                return@query
+            }
+            val dl = WakeLang.pickDownload(cands, state.supported, badLangs)
+            if (dl == null) {
+                fatalNoPack(cands, state.supported)
+                return@query
+            }
+            val asked = WakePacks.download(r, app, dl)
+            if (asked) {
+                fatal(
+                    "Wake word ke liye " + WakeLang.label(dl) + " speech pack phone mein nahi tha. Download shuru " +
+                        "kar diya hai (Wi-Fi chahiye, thodi der lagegi). Khatam hone par dobara try karo."
+                )
+            } else {
+                fatal(
+                    "Wake word ke liye " + WakeLang.label(dl) + " speech pack phone mein nahi hai aur download shuru nahi " +
+                        "ho paya. Google app aur Speech Services by Google update karo, phir dobara try karo."
+                )
+            }
+        }
+    }
+
+    /** Android could not answer the pack check: behave as before and use the best language not known to fail. */
+    private fun applyUnknown(cands: List<String>, then: (() -> Unit)?) {
+        val d = cands.firstOrNull { WakeLang.norm(it) !in badLangs }
+        if (d == null) {
+            fatalNoPack(cands, emptyList())
+            return
+        }
+        lang = d
+        then?.invoke()
+    }
+
+    private fun fatalNoPack(cands: List<String>, supported: List<String>) {
+        val names = cands.joinToString(" / ") { WakeLang.label(it) }
+        val extra = if (supported.isEmpty()) "" else " Phone ye languages support karta hai: " + supported.joinToString(", ") + "."
+        fatal(
+            "Wake word ke liye on-device speech pack nahi mila ($names)." + extra +
+                " Google app aur Speech Services by Google update karo, phir dobara try karo."
+        )
+    }
+
+    /** The recognizer answered error 12 / 13 for the language it was given: drop it and look for another one. */
+    private fun packMissing() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            fatal("Wake word ke liye Android 13+ chahiye")
+            return
+        }
+        val bad = WakeLang.norm(attemptLang)
+        badLangs.add(bad)
+        langCache = null
+        val cur = lang
+        if (cur != null && WakeLang.norm(cur) == bad) lang = null
+        finishRecognizer()
+        if (checking) {
+            endAttempt() // a pack check is already running; it reads badLangs when it answers
+        } else {
+            checkPacks { endAttempt() }
+        }
+    }
 
     private val recListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {}
@@ -389,7 +538,7 @@ class VadGatedWakeWord(
                     endAttempt()
                 }
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> fatal("Mic permission nahi hai")
-                12, 13 -> fatal("Wake word ke liye offline speech pack (English India) download karo")
+                12, 13 -> packMissing()
                 else -> endAttempt()
             }
         }

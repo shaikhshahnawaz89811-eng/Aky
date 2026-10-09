@@ -303,7 +303,7 @@ class VoiceAiFragment : Fragment() {
             valueRow(R.drawable.ic_mic, "Wake test", "10 try") { _, _ -> WakeTestDialog.show(requireContext()) }
             noteRow(
                 "Opt-in. Awaaz sirf phone ke on-device recognizer se suni jaati hai: record nahi hoti, network par nahi jaati " +
-                    "(Android 13+ aur offline English India speech pack chahiye). Mic tab tak chalu rehta hai jab tak notification " +
+                    "(Android 13+ aur on-device English speech pack chahiye; pack na ho toh app khud download karwane ki koshish karti hai, Wi-Fi par). Mic tab tak chalu rehta hai jab tak notification " +
                     "dikhti hai; Stop wahin se dabao. Ye asli keyword-spotter nahi hai: phrase ka pehla shabd aksar kat jaata hai, " +
                     "isliye \"hey\" zaroori nahi: Normal level par sirf \"Jarvis\" bolna bhi kaafi hai. False trigger zyada lagein toh Strict karo. " +
                     "Xiaomi / Oppo / Vivo / Samsung ka battery saver service band kar sakta hai: app kholte hi wo dobara chalu ho jaati hai, " +

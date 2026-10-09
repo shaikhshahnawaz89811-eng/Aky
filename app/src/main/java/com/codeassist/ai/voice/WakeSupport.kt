@@ -31,7 +31,7 @@ object WakeSupport {
             return Check(
                 false,
                 "Is phone par on-device speech recognizer nahi mila. Google app update karo aur Settings mein " +
-                    "offline speech pack (English India) download karo, phir dobara try karo."
+                    "offline speech pack (English) download karo, phir dobara try karo."
             )
         }
         return Check(true, "")

@@ -771,3 +771,35 @@ leftovers of an earlier export and are not needed (the model card says so); do n
 2. Badge "Unloaded" and the line "Whisper (Hinglish) · encoder.int8.onnx + decoder.int8.onnx + tokens.txt". Tap **Load**: "Loaded".
 3. Speech engine = Offline model. Say a Hinglish sentence: text appears after you stop talking.
 4. Hands-free: say "Jarvis, time batao" (or "hey Jarvis ..."). Wake test in the same screen shows how many of 10 were caught.
+
+
+# v7: wake word "offline speech pack (English India)" error fixed in code
+
+**Problem (phone report):** Settings > Voice and AI > Wake test stopped with "Wake word ke liye offline speech pack (English India)
+download karo" although every offline setting was already on. Cause: `WakeSupport` only asks "is there an on-device recognizer?"
+(yes), then the recognizer itself answered error 12 / 13 (`LANGUAGE_NOT_SUPPORTED` / `LANGUAGE_UNAVAILABLE`) for `en-IN`. The
+on-device recognizer keeps its own language packs, which are not always the offline pack shown in the Google app. The app never
+asked for a download and never tried another English pack.
+
+**Fix**
+- `WakeLang` (pure Kotlin): candidate order `en-IN` > `en-US` > `en-GB` > any other installed English (Devanagari phrase: `hi-IN` only),
+  and the pick functions for "installed", "already downloading", "which one to download".
+- `WakePacks` (Android 13+): `SpeechRecognizer.checkRecognitionSupport` (installed / pending / supported packs) and `triggerModelDownload`.
+- `VadGatedWakeWord`: at start it checks the packs and uses the first installed language. Nothing installed: it asks Android to download
+  one (needs Wi-Fi) and stops with a message saying so (wake test dialog / service notification). If the recognizer still answers
+  12 / 13 for a language, that language is dropped for the run and the next one is tried (no more dead end on the first error).
+  If Android cannot answer the pack check (3 s timeout), it behaves like v6.
+- Texts: `WakeSupport` and the Voice and AI note no longer say only "English India".
+- Test: `WakeLangTest` (expected values worked out by hand).
+
+## Verification status — read first
+- Kotlin was **not compiled** and the unit tests were **not run** here (no Kotlin compiler / network). Braces were checked with a script
+  only. CI runs `testDebugUnitTest`; a compile error would show in the CI log.
+- **Not tested on a phone.** `checkRecognitionSupport` / `triggerModelDownload` depend on the phone's recognition service: some builds
+  answer `onError` (then v6 behaviour) or do nothing on download. The download itself finishes after the dialog, so the first test
+  after install may still stop with "download shuru kar diya hai"; wait a few minutes on Wi-Fi and run Wake test again.
+- If it still stops with a "nahi mila" message, the message lists the languages the phone says it supports: send that line.
+
+## Phone check
+1. Settings > Voice and AI > Hands-free > Wake test. Either it starts at once (a pack was found), or it says a download was started.
+2. After the download, run Wake test again and say "Jarvis" 10 times.
