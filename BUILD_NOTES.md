@@ -695,3 +695,36 @@ The offline speech model now has a card in Settings > Voice and AI, built like t
 - New pure-Kotlin `OfflineSttImport` (which picked file is model / tokens) with `OfflineSttImportTest`.
 
 Status: written and bracket-checked, **not compiled** (no Kotlin compiler in the sandbox). Send the CI log if anything fails.
+
+
+---
+
+# v5: offline speech model, AAR source fixed + Settings card spacing
+
+**Why:** in v4 the Offline speech model card (Import files, Download, Load, Unload, Delete) was complete in code but
+could not do anything on a phone built from CI: the CI step downloaded the sherpa-onnx AAR from a GitHub release URL
+that was never opened, and a failed download is silent by design. No AAR in the APK means the card says "Nahi mila
+(AAR)", Load refuses, and the engine cannot be switched to Offline model.
+
+**Not changed:** the engine is still sherpa-onnx (NeMo CTC, IndicConformer-style), not Vosk. There is no Vosk / Kaldi engine
+in this source. `SttEngine` is the slot where one could be added.
+
+## What changed
+- New `scripts/fetch_sherpa_aar.sh`: tries `huggingface.co/csukuangfj/sherpa-onnx-libs/.../android/aar/<ver>/sherpa-onnx-<ver>.aar`,
+  the same folder without the version folder, the `sherpa-onnx-static-link-onnxruntime-<ver>.aar` file of that folder, and the old
+  GitHub release URL. A download is kept only if it is a valid zip, over 5 MB, and its `classes.jar` contains
+  `com/k2fsa/sherpa/onnx/OfflineRecognizer`. It never fails the build (exit 0, prints a warning).
+- `.github/workflows/android-build.yml`: the fetch step calls that script; new step "Report sherpa-onnx in APK" prints a warning
+  when `libsherpa-onnx-jni.so` is not inside the debug APK.
+- `app/libs/README.txt`: says where the AAR really lives.
+- `VoiceAiFragment`: `card(topMarginDp)`; the rows card under the Offline speech model card now has a 12 dp gap (they touched before).
+
+## Verification status
+- The script was tested against a local fake server: good file in the versioned folder, only the static-link name present, a webpage
+  served as 200, nothing anywhere, and an AAR already in `app/libs`. All five behaved as intended.
+- **Not tested against the real Hugging Face repo** (no network where this was written). The exact location / name for 1.12.39 is a
+  guess among four candidates; the version folders and the static-link name were seen on the repo's pages for 1.12.21 and older. If the CI log
+  shows the warning, download the AAR from that repo by hand into `app/libs/`, or set `SHERPA_VER` to a version that exists there.
+- Kotlin was **not compiled** (no Kotlin compiler here). The only Kotlin edit is the `card(...)` helper and one call.
+- The sherpa-onnx class / method names used by `SherpaBridge` (by reflection) were not checked against the AAR; a mismatch shows
+  "Ye sherpa-onnx version app ke code se match nahi karta".

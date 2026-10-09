@@ -336,7 +336,7 @@ class VoiceAiFragment : Fragment() {
         section("Offline speech model (sherpa-onnx)")
         offlineButtonsKey = null
         offlineCard = newCard()
-        card { offlineSttRows() }
+        card(12) { offlineSttRows() } // 12 dp gap under the model card (the rows card used to touch it)
 
         section("Voice")
         card {
@@ -1804,12 +1804,14 @@ class VoiceAiFragment : Fragment() {
         })
     }
 
-    private fun card(content: () -> Unit) {
+    private fun card(topMarginDp: Int = 0, content: () -> Unit) {
         val card = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundResource(if (Store.glassEffect) R.drawable.glass_card else R.drawable.glass_card_solid)
         }
-        container.addView(card)
+        container.addView(card, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(topMarginDp) })
         activeCard = card
         content()
         activeCard = null
