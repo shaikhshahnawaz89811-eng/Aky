@@ -36,6 +36,20 @@ object PolicyGate {
         else -> "Ye action karun?"
     }
 
+    /**
+     * Phase 3 hard gate, checked by the task engine right before a tool runs (audit Sec 11.2: "T2 / T3 never run
+     * without a valid confirmation", KPI target 0). T0 / T1 may run; T2 only after the user's tap; T3 and unknown
+     * tools never.
+     */
+    fun mayExecute(tool: String, confirmed: Boolean): Boolean {
+        val spec = ToolSpecs.find(tool) ?: return false
+        return when (spec.tier) {
+            "T0", "T1" -> true
+            "T2" -> confirmed
+            else -> false
+        }
+    }
+
     /** Only a T2 tool may be started by a confirmation tap. */
     fun canRunAfterConfirm(tool: String): Boolean = ToolSpecs.find(tool)?.tier == "T2"
 

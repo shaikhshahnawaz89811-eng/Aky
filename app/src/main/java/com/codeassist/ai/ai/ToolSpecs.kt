@@ -7,19 +7,36 @@ import com.google.gson.JsonObject
 object ToolSpecs {
     const val MAX_TASKS = 4
 
+    /**
+     * Phase 3: every tool takes an optional `after`, the id of an earlier call of the same answer (t1, t2 ... in the
+     * order the calls are written) that must finish first. It becomes [PlanTask.dependsOn]; if that earlier call
+     * fails, this one is skipped and the reply says so. Without `after` a call is independent.
+     */
+    private val AFTER = ToolParam(
+        "after", "string",
+        "Optional: id of an earlier call that must finish first.",
+        required = false
+    )
+
+    private fun spec(
+        name: String, desc: String, tier: String, params: List<ToolParam>,
+        readOnly: Boolean = false, idempotent: Boolean = false
+    ): ToolSpec = ToolSpec(name, desc, tier, params + AFTER, readOnly, idempotent)
+
     val all: List<ToolSpec> = listOf(
-        ToolSpec("time_now", "Current time.", "T0", emptyList(), readOnly = true),
-        ToolSpec("date_today", "Today's date and weekday.", "T0", emptyList(), readOnly = true),
-        ToolSpec("battery_level", "Battery percent and charging state.", "T0", emptyList(), readOnly = true),
-        ToolSpec(
+        spec("time_now", "Current time.", "T0", emptyList(), readOnly = true, idempotent = true),
+        spec("date_today", "Today's date and weekday.", "T0", emptyList(), readOnly = true, idempotent = true),
+        spec("battery_level", "Battery percent and charging state.", "T0", emptyList(), readOnly = true, idempotent = true),
+        spec(
             "torch_set", "Turn the flashlight on or off.", "T1",
-            listOf(ToolParam("on", "boolean", "true = on, false = off"))
+            listOf(ToolParam("on", "boolean", "true = on, false = off")),
+            idempotent = true
         ),
-        ToolSpec(
+        spec(
             "timer_set", "Start a countdown timer.", "T1",
             listOf(ToolParam("seconds", "integer", "Length in seconds, 1 to 86400"))
         ),
-        ToolSpec(
+        spec(
             "alarm_set", "Set an alarm for the next time this clock time comes.", "T1",
             listOf(
                 ToolParam("hour", "integer", "Hour, 24-hour format 0-23 (8 pm = 20)"),
@@ -27,11 +44,12 @@ object ToolSpecs {
                 ToolParam("tomorrow", "boolean", "true only if the user said tomorrow (kal)", required = false)
             )
         ),
-        ToolSpec(
+        spec(
             "app_open", "Open an installed app.", "T0",
-            listOf(ToolParam("name", "string", "App name as the user said it"))
+            listOf(ToolParam("name", "string", "App name as the user said it")),
+            idempotent = true
         ),
-        ToolSpec(
+        spec(
             "call_dial", "Open the dialer with a number. The user presses Call.", "T2",
             listOf(ToolParam("number", "string", "Digits only, optional leading +"))
         )
@@ -56,6 +74,30 @@ object ToolSpecs {
         }
 
     fun cleanNumber(raw: String): String = raw.replace(Regex("[ \\-().]"), "")
+
+    /**
+     * Builds a [PlanTask] from a raw call of either brain: the optional `after` argument is taken out of the
+     * arguments and becomes the task's dependencies. "t1", "T1", "1" and "t1, t2" are all understood; anything else is kept
+     * as written so [TaskGraph.validate] can refuse the plan instead of the app guessing what was meant.
+     */
+    fun task(id: String, tool: String, rawArgs: Map<String, String>): PlanTask {
+        if (!rawArgs.containsKey("after")) return PlanTask(id, tool, rawArgs)
+        val args = LinkedHashMap<String, String>()
+        for ((k, v) in rawArgs) if (k != "after") args[k] = v
+        return PlanTask(id, tool, args, parseAfter(rawArgs["after"]))
+    }
+
+    fun parseAfter(raw: String?): List<String> {
+        if (raw == null) return emptyList()
+        val out = ArrayList<String>()
+        for (part in raw.split(',', ';', ' ')) {
+            val p = part.trim().lowercase()
+            if (p.isEmpty()) continue
+            val id = if (p.all { it.isDigit() }) "t$p" else p
+            if (!out.contains(id)) out.add(id)
+        }
+        return out
+    }
 
     // ---------- validation ----------
 
@@ -103,7 +145,7 @@ object ToolSpecs {
             val problem = validate(t)
             if (problem != null) return problem
         }
-        return null
+        return TaskGraph.validate(tasks)
     }
 
     // ---------- Qwen2.5 tool prompt (the format its chat template was trained on) ----------

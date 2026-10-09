@@ -19,6 +19,25 @@ object ReplyComposer {
         return if (parts.isEmpty()) ack.trim() else parts.joinToString(" ")
     }
 
+    /**
+     * Audit Sec 9.6, partial failure: when a plan of 2 or more tasks did not fully work, one closing line says how it
+     * went and what the user can do next. [skipped] counts skipped and cancelled tasks. Null when nothing went wrong or
+     * the plan had a single task (that task's own line already says everything).
+     */
+    fun partialSummary(done: Int, failed: Int, skipped: Int): String? {
+        if (failed + skipped == 0) return null
+        if (done + failed + skipped < 2) return null
+        val sb = StringBuilder()
+        if (done == 1) sb.append("1 kaam ho gaya")
+        else if (done > 1) sb.append(done).append(" kaam ho gaye")
+        else sb.append("Koi kaam nahi hua")
+        // with nothing done, "koi kaam nahi hua" already covers the failed ones
+        if (failed > 0 && done > 0) sb.append(", ").append(failed).append(" nahi hua")
+        if (skipped > 0) sb.append(", ").append(skipped).append(" chhod diya")
+        sb.append(". Chaho toh nahi hue kaam dobara bolo.")
+        return sb.toString()
+    }
+
     fun withPending(base: String, readback: String?): String {
         if (readback == null) return base
         val q = readback.trim() + " " + CONFIRM_HINT

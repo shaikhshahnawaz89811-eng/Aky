@@ -156,3 +156,27 @@ break the step before lint and build run. Licenses are still accepted, and Gradl
 build-tools it needs. A Node.js 20 deprecation warning in the log is harmless.
 The workflow builds and uploads both APKs first, then runs `testDebugUnitTest` and uploads the test report
 (artifact `unit-test-report`), so a failing test never costs you the APK. Lint findings do not fail the build.
+
+## Phase 3, part 3A: task engine (audit PDF Sec 13, Phase 3)
+
+Phase 3 of the audit roadmap is "Multi-intent DAG, durable queue, corrections + undo, priority classes, risk tiers +
+confirmations, progress monitor, partial failure". Part 3A is the engine underneath; corrections and the progress monitor
+are part 3B (see BUILD_NOTES.md for what is in which part).
+
+- **Plan = DAG** (`TaskGraph`, `TaskEngine`): every tool now has an optional `after` argument (id of an earlier call, t1, t2 ...
+  in the order the brain wrote them). "Pehle torch on karo, phir 5 minute ka timer" becomes torch -> timer. Loops, self links
+  and unknown ids are refused like any broken call (Gemma gets its one repair retry, then a short question).
+- **Order of work**: dependencies first, then priority class (NOW before SOON: answers and instant effects before alarms /
+  timers), then the order the brain wrote them.
+- **Partial failure**: when a step fails, only the steps that depend on it are skipped (with the reason); independent steps
+  still run. The one merged reply ends with a line such as "1 kaam ho gaya, 1 nahi hua, 1 chhod diya".
+- **Confirmations**: a T2 step (dial) waits for the Haan tap under the reply, one at a time; the next T2 step of the same plan
+  appears under the same reply after the first answer. Right before any tool runs the engine asks `PolicyGate.mayExecute`
+  again, and every attempt that gets past it without a tap would be counted (target 0).
+- **Durable queue** (`TaskQueue`): every plan and the state of every step is written to `task_plans.json` before and after each
+  tool runs. After a process kill, the next app start (`TaskEngine.recover`) re-runs steps that are safe to repeat (time, date,
+  battery, torch, open app), never re-runs a timer or alarm that may already exist (it says "pata nahi hua ya nahi"), drops
+  work older than 2 minutes, and puts the result into the chat.
+- **Debug** (Settings > Activity and debug > **Debug: task engine**): every stored plan with the state of each step, Copy, and a
+  **Kill-test** button that writes a half-done plan and closes the app so the recovery can be checked on the phone.
+- **KPIs** (Debug: conversation KPIs): a "Task engine (Phase 3)" block and a "Phase 3 exit checklist".

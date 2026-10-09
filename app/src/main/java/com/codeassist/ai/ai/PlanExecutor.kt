@@ -6,9 +6,12 @@ import com.codeassist.ai.data.Store
 import com.google.gson.Gson
 
 /**
- * Runs a plan the brain proposed (audit Sec 9.6, 11): each task goes through [PolicyGate] first, T0 / T1 tools
- * reuse the same Tier-0 code as the fast path, T2 tools wait for the user's tap, and every action that really
- * happened is written to [ActivityLog] (with an undo token where Android allows one).
+ * Entry point used by [ChatRunner] and the chat screen (audit Sec 9.6, 11).
+ *
+ * Phase 3: the plan itself is now run by [TaskEngine] (a DAG of nodes, saved to disk, partial failure, crash recovery).
+ * This object keeps the two calls the rest of the app already uses: [run] for a plan the brain just proposed and
+ * [confirm] for the user's Haan / Nahi tap under a reply. A confirmation made by an older build (no plan id in the stored
+ * JSON) is still answered by the single-action code at the bottom.
  */
 object PlanExecutor {
     /** What a plan turned into: the reply text, chip text, undo ids and the T2 action still waiting (JSON). */
@@ -16,55 +19,21 @@ object PlanExecutor {
         val text: String,
         val chip: String?,
         val undoIds: List<String>,
-        val pendingJson: String?
+        val pendingJson: String?,
+        /** Id of the stored plan this reply belongs to (null for the old single-action path). */
+        val planId: String? = null
     )
 
     private val gson = Gson()
 
-    fun run(ctx: Context, ack: String, tasks: List<PlanTask>): Outcome {
-        val app = ctx.applicationContext
-        ActivityLog.init(app)
-        val lines = ArrayList<ReplyComposer.Line>()
-        val undo = ArrayList<String>()
-        val chips = ArrayList<String>()
-        var pending: PendingAction? = null
-
-        for (t in tasks) {
-            val decision = PolicyGate.check(t)
-            if (decision is PolicyGate.Decision.Deny) {
-                lines.add(ReplyComposer.Line(decision.reason, false, false))
-            } else if (decision is PolicyGate.Decision.Confirm) {
-                if (pending == null) {
-                    pending = PendingAction(t.tool, t.args, decision.readback, "")
-                } else {
-                    lines.add(
-                        ReplyComposer.Line("Ek baar mein ek hi cheez confirm kar sakta hoon, baaki alag se bolna.", false, false)
-                    )
-                }
-            } else {
-                val r = ToolRunner.execute(app, t)
-                lines.add(ReplyComposer.Line(r.reply, r.ok, ToolSpecs.find(t.tool)?.readOnly == true))
-                if (r.ok) {
-                    val entry = ActivityLog.add(r.title, r.tier, r.reply, r.undo)
-                    if (r.undo != null) undo.add(entry.id)
-                    chips.add(r.title)
-                }
-            }
-        }
-
-        val base = ReplyComposer.results(ack, lines)
-        val waiting = pending
-        val pendingJson: String? = if (waiting == null) null else gson.toJson(
-            PendingAction(waiting.tool, waiting.args, waiting.readback, if (lines.isEmpty()) "" else base)
-        )
-        val text = ReplyComposer.withPending(if (lines.isEmpty()) "" else base, waiting?.readback)
-        val chip: String? = when {
-            chips.isNotEmpty() -> chips.distinct().joinToString(" · ")
-            waiting != null -> "Confirm chahiye"
-            else -> null
-        }
-        return Outcome(text, chip, undo, pendingJson)
-    }
+    /**
+     * Runs a checked plan. [chatId] and [messageId] say where its reply will live, so a plan that a crash interrupted
+     * can still report to the right chat after the restart ([TaskEngine.recover]). Both may be empty.
+     */
+    fun run(
+        ctx: Context, ack: String, tasks: List<PlanTask>,
+        chatId: String = "", messageId: String = ""
+    ): Outcome = TaskEngine.run(ctx.applicationContext, chatId, messageId, ack, tasks)
 
     /**
      * The user tapped Haan ([yes] true) or Nahi on a pending T2 action. Updates the stored message and returns it
@@ -85,6 +54,37 @@ object PlanExecutor {
             null
         }
 
+        val planId = p?.planId
+        val nodeId = p?.nodeId
+        if (p != null && planId != null && nodeId != null) {
+            val out = TaskEngine.confirm(app, planId, nodeId, yes)
+            val updated: Message = if (out != null) {
+                m.copy(
+                    text = out.text, pending = out.pendingJson,
+                    undoId = if (out.undoIds.isEmpty()) null else out.undoIds.joinToString(","),
+                    actions = out.chip
+                )
+            } else {
+                // the stored plan is gone (cleared, or older than a day): nothing runs, the message is closed
+                m.copy(
+                    text = join(p.base, "Ye plan ab mila nahi, isliye kuch nahi chalaya. Dobara bolo."),
+                    pending = null,
+                    actions = if (m.actions == "Confirm chahiye") null else m.actions
+                )
+            }
+            list[i] = updated
+            Store.saveMessages(chatId, list)
+            return updated
+        }
+        return confirmLegacy(app, chatId, list, i, m, p, yes)
+    }
+
+    // ---------- confirmation made by a build older than Phase 3 (no stored plan) ----------
+
+    private fun confirmLegacy(
+        app: Context, chatId: String, list: MutableList<Message>, i: Int, m: Message,
+        p: PendingAction?, yes: Boolean
+    ): Message {
         var text = (p?.base ?: "").trim()
         var undoIds: String? = m.undoId
         var chip: String? = m.actions

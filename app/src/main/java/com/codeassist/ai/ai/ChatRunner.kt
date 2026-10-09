@@ -352,7 +352,7 @@ object ChatRunner {
             }
         }
         if (streamed.calls.isNotEmpty()) {
-            val tasks = streamed.calls.mapIndexed { i, c -> PlanTask("t" + (i + 1), c.name, c.args) }
+            val tasks = streamed.calls.mapIndexed { i, c -> ToolSpecs.task("t" + (i + 1), c.name, c.args) }
             return planMessage(app, run, "gemini", "Gemini · $model", streamed.text, tasks, payload.skipped)
         }
         return Message(
@@ -379,7 +379,7 @@ object ChatRunner {
         }
         run.label = "Phone action chal raha hai"
         postProgress(run)
-        val out = PlanExecutor.run(app, ack, tasks)
+        val out = PlanExecutor.run(app, ack, tasks, run.chatId, run.messageId)
         run.detail = "tools: " + tasks.joinToString(",") { it.tool }
         val undo: String? = if (out.undoIds.isEmpty()) null else out.undoIds.joinToString(",")
         return Message(

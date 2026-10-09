@@ -14,6 +14,7 @@ import androidx.drawerlayout.widget.DrawerLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
+import com.codeassist.ai.ai.TaskEngine
 import com.codeassist.ai.chats.ChatsFragment
 import com.codeassist.ai.data.Store
 import com.codeassist.ai.home.HomeFragment
@@ -52,6 +53,12 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
+        // Phase 3: a plan that a process kill left half-done is finished or reported before the chat is drawn
+        try {
+            TaskEngine.recover(applicationContext)
+        } catch (_: Throwable) {
+            // recovery is best effort: it must never stop the app from opening
+        }
         setContentView(R.layout.activity_main)
 
         drawer = findViewById(R.id.drawerLayout)

@@ -19,6 +19,9 @@ import com.codeassist.ai.R
 import com.codeassist.ai.ai.ActivityLog
 import com.codeassist.ai.ai.BrainStatus
 import com.codeassist.ai.ai.ConvKpi
+import com.codeassist.ai.ai.TaskEngine
+import com.codeassist.ai.ai.TaskGraph
+import com.codeassist.ai.ai.TaskQueue
 import com.codeassist.ai.ai.Trace
 import com.codeassist.ai.data.Store
 
@@ -97,6 +100,9 @@ class SettingsFragment : Fragment() {
             valueRow(R.drawable.ic_chart, "Debug: conversation KPIs", "") { _, _ ->
                 showKpi()
             }
+            valueRow(R.drawable.ic_chart, "Debug: task engine", taskPlanCount()) { _, _ ->
+                showTaskEngine()
+            }
             noteRow(
                 "Activity log mein har phone action (torch, alarm, timer, call, app) dikhta hai. " +
                     "Torch, alarm aur timer wapas kiye ja sakte hain. Debug mein sirf timing aur status hota hai, message ka text nahi."
@@ -160,6 +166,64 @@ class SettingsFragment : Fragment() {
             }
             .setNegativeButton("Close", null)
             .show()
+    }
+
+    private fun taskPlanCount(): String {
+        TaskQueue.init(requireContext())
+        return TaskQueue.count().toString() + " plans"
+    }
+
+    /** Phase 3: the stored plans with the state of every node, and the kill-process resume test. */
+    private fun showTaskEngine() {
+        val ctx = requireContext()
+        TaskQueue.init(ctx)
+        val plans = TaskQueue.all().take(10)
+        val text = if (plans.isEmpty()) {
+            "Abhi koi plan nahi. Ek saath kai kaam bolo, jaise: \"kal subah 8 baje alarm laga do aur battery batao\"."
+        } else {
+            plans.joinToString("\n\n") { TaskGraph.describe(it) }
+        }
+        AlertDialog.Builder(ctx)
+            .setTitle("Task engine")
+            .setMessage(text)
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("CodeAssist task engine", text))
+                Toast.makeText(ctx, "Copy ho gaya", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("Kill-test") { _, _ -> confirmKillTest() }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun confirmKillTest() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("Kill-process resume test")
+            .setMessage(
+                "Ye ek aisa plan likhega jo beech mein ruka tha (5 kaam, ek timer jo \"pata nahi\" banega), " +
+                    "phir app ko band kar dega. App ko 2 minute ke andar dobara kholo: naye chat mein dikhna chahiye " +
+                    "ki kya dobara chala, kya chhoda gaya. Chalao?"
+            )
+            .setPositiveButton("Chalao") { _, _ -> runKillTest() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runKillTest() {
+        val app = requireContext().applicationContext
+        Store.init(app)
+        val chat = Store.newChat("Task engine test")
+        Store.saveMessages(
+            chat.id,
+            listOf(com.codeassist.ai.data.Message(role = com.codeassist.ai.data.Role.USER, text = "Task engine kill-test"))
+        )
+        Store.activeChatId = chat.id
+        TaskEngine.debugSeed(app, chat.id)
+        Toast.makeText(app, "Plan likh diya. App band ho rahi hai, 2 minute ke andar dobara kholo.", Toast.LENGTH_LONG).show()
+        // a short delay lets the app's own preference writes (chat list, active chat) reach the disk before the kill
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+            { android.os.Process.killProcess(android.os.Process.myPid()) }, 1800L
+        )
     }
 
     private fun showKpi() {

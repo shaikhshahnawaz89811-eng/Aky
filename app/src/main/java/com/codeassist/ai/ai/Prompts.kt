@@ -21,7 +21,10 @@ object Prompts {
         "Phone actions: call a tool only when the user clearly asks for that action now (alarm, timer, torch, " +
             "battery, time, date, open an app, dial a number). For every other message answer normally and call " +
             "no tool. Never invent a phone number or an app name. If something needed is missing, ask ONE short " +
-            "question instead of guessing. The app shows the tool results to the user, so do not describe them."
+            "question instead of guessing. The app shows the tool results to the user, so do not describe them. " +
+            "Calls are numbered t1, t2 ... in the order you write them. Only when one call must wait for another " +
+            "(\"pehle torch on karo, phir timer\"), put the earlier call's id in this call's `after`; otherwise leave " +
+            "`after` out. If the earlier call fails, the later one is skipped."
 
     /**
      * System prompt for the on-device 1.5B model: short, plain English instructions (a small model follows these
@@ -42,7 +45,8 @@ object Prompts {
     const val LOCAL_TOOL_HINT =
         "Examples: \"kal subah 6 baje utha dena\" -> alarm_set {hour 6, minute 0, tomorrow true}. " +
             "\"10 minute baad yaad dilana\" -> timer_set {seconds 600}. " +
-            "\"torch jalao\" -> torch_set {on true}. \"battery kitni hai\" -> battery_level."
+            "\"torch jalao\" -> torch_set {on true}. \"battery kitni hai\" -> battery_level. " +
+            "\"pehle torch on karo phir 5 minute ka timer\" -> torch_set {on true}, timer_set {seconds 300, after t1}."
 
     /** Used for the one retry after a rejected reply: as little text as possible for the model to trip over. */
     const val LOCAL_MINIMAL_SYSTEM =

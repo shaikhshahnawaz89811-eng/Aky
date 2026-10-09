@@ -200,6 +200,19 @@ object ConvKpi {
             .append(" · reject: ").append(get("local_guard_fail"))
             .append(" · photo par seedha jawab: ").append(get("local_image_block")).append("\n")
 
+        sb.append("\nTask engine (Phase 3)\n")
+        sb.append("  plans: ").append(get("plan_runs")).append(" · 2+ kaam wale: ").append(get("plan_multi"))
+            .append(" · `after` (dependency) wale: ").append(get("plan_with_deps")).append("\n")
+        sb.append("  kaam: ").append(get("plan_node_ok")).append(" ho gaye · ").append(get("plan_node_failed"))
+            .append(" nahi hue · ").append(get("plan_node_skipped")).append(" chhode (pehla kaam fail)\n")
+        sb.append("  T2 confirm: ").append(get("t2_waiting")).append(" ruke · ").append(get("t2_confirmed"))
+            .append(" tap se chale · ").append(get("t2_cancelled")).append(" cancel · ").append(get("t2_expired"))
+            .append(" purane · BINA confirm chalne ki koshish: ").append(get("t2_blocked")).append("  (target 0)\n")
+        sb.append("  crash resume: ").append(get("plan_recovered")).append(" plan mile · ").append(get("plan_resumed_nodes"))
+            .append(" kaam dobara chale · ").append(get("plan_recover_unsure")).append(" \"pata nahi hua ya nahi\"\n")
+        sb.append("  kill-process test: ").append(get("resume_test_pass")).append(" pass · ").append(get("resume_test_fail"))
+            .append(" fail · ").append(get("resume_test_late")).append(" der se khola (2 minute ke baad, ginti nahi)\n")
+
         sb.append("\nPhase 2 exit checklist\n")
         val listenHours = get("wake_listen_ms") / 3_600_000.0
         sb.append(check(trials >= 20, "Wake false reject naapa", "kam se kam 20 try chahiye (Wake test), abhi $trials")).append("\n")
@@ -207,6 +220,19 @@ object ConvKpi {
         sb.append(check(speaking >= 50, "False barge-in per 50 turns", "50 bolte turns chahiye, abhi $speaking")).append("\n")
         sb.append(check(drainHours >= 4.0, "Battery drain", String.format(Locale.US, "4 ghante saaf sample chahiye, abhi %.1f", drainHours))).append("\n")
         sb.append("  [baaki] Premature cut-off %: labelled Hinglish test set se hi naapa jaata hai\n")
+
+        sb.append("\nPhase 3 exit checklist\n")
+        val t2Waits = get("t2_waiting")
+        val t2Blocked = get("t2_blocked")
+        sb.append(
+            if (t2Blocked > 0) "  [FAIL] Bina confirm T2 chalne ki koshish $t2Blocked baar hui: code mein bug hai, mujhe bhejo\n"
+            else check(t2Waits >= 5, "0 unconfirmed T2 / T3", "5 T2 confirm chahiye (dial), abhi $t2Waits") + "\n"
+        )
+        sb.append(
+            if (get("resume_test_fail") > 0) "  [FAIL] Kill-process resume test fail hua: Debug: task engine ka plan text mujhe bhejo\n"
+            else check(get("resume_test_pass") >= 1, "Kill-process resume test", "Settings > Debug: task engine > Test chalao") + "\n"
+        )
+        sb.append("  [baaki] Multi-intent >= 85%: labelled Hinglish multi-intent set chahiye (Appendix A #2, #19, #20), app ise khud nahi naap sakti\n")
         return sb.toString().trimEnd()
     }
 }

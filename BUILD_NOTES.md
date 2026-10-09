@@ -803,3 +803,91 @@ asked for a download and never tried another English pack.
 ## Phone check
 1. Settings > Voice and AI > Hands-free > Wake test. Either it starts at once (a pack was found), or it says a download was started.
 2. After the download, run Wake test again and say "Jarvis" 10 times.
+
+
+---
+
+# Phase 3, part 3A (task engine: DAG, durable queue, partial failure, T2 gate, crash resume) — honest status
+
+**Same situation as before: written and statically checked in a sandbox with no Android SDK and no Kotlin compiler, so it has
+never been compiled or run, and the new JVM tests have not been run.** What was done instead: brackets / strings balance in every
+new or edited Kotlin file (lexer that understands string templates), every member used on project objects exists, every import
+resolves, and the pure logic (`TaskGraph` rules, `ToolSpecs.parseAfter`, `ReplyComposer.partialSummary`, the kill-test plan) was
+re-implemented line by line in Python and run on every scenario the new JVM tests assert (all pass). Run
+`./gradlew assembleDebug testDebugUnitTest` (CI does) and send the compiler output if anything fails.
+
+## What the audit's Phase 3 asks for, and where it stands
+
+| Audit item (Sec 13, Phase 3) | Part | Status |
+|---|---|---|
+| Multi-intent DAG | 3A | `after` on every tool -> `PlanTask.dependsOn` -> `TaskGraph` (validation, order). Steps run one after another, in dependency order |
+| Durable queue | 3A | `TaskQueue`: JSON file, written before and after every tool. **Not Room**: the app has no Room / KSP dependency; the file holds at most 20 plans |
+| Partial failure | 3A | Failed step -> only its dependents are SKIPPED; independent steps run; closing summary line |
+| Risk tiers + confirmations | 3A | T2 step = WAITING_CONFIRM, one at a time, hard gate `PolicyGate.mayExecute` before every run, KPI `t2_blocked` must stay 0. T3 is never run by the app (unchanged) |
+| Priority classes | 3A (partly) | NOW and SOON are used. INTERRUPT and LATER exist in the enum but nothing uses them yet: they belong to corrections (3B) and proactive work (Phase 4) |
+| Corrections + undo | 3B | Undo already exists (one chip undoes every action of a reply, activity log). "Nahi, 9 baje" -> change the same alarm needs entity ids and an alarm store: not in 3A |
+| Progress monitor | 3B | Not built. All eight tools return at once, so there is nothing slow to report yet; it needs a slow tool (web search) to be testable |
+
+## Exit criteria of Phase 3
+
+| Criterion | Status |
+|---|---|
+| 0 unconfirmed T2 / T3 | Enforced in code and unit-tested (`PolicyGatePhase3Test`); the KPI screen counts attempts. Needs 5 real dial confirmations to show "[naapa]" |
+| Kill-process resume test passes | Debug screen has a one-button test (below). Passes only when you run it on a phone |
+| Multi-intent >= 85% | **Cannot be measured by the app.** It needs the labelled Hinglish set (Appendix A cases 2, 19, 20). Cases 19 (petrol) and 20 (plan edit) need tools the app does not have |
+
+## Files
+
+New: `ai/TaskGraph.kt` (pure), `ai/TaskQueue.kt`, `ai/TaskEngine.kt`; tests `TaskGraphTest`, `ToolSpecsAfterTest`,
+`PolicyGatePhase3Test`, `ReplyComposerPartialTest`, `PlanParserAfterTest`.
+Changed: `PlanTypes` (`PlanTask.dependsOn`, `ToolSpec.idempotent`, `PendingAction.planId / nodeId`), `ToolSpecs` (`after`, `task()`,
+`parseAfter()`, graph check inside `check()`), `PlanParser` and `ChatRunner` (build tasks with `ToolSpecs.task`, pass chat id and
+message id), `PlanExecutor` (delegates; plan-aware confirm; the old single-action confirm stays for messages made by older builds),
+`PolicyGate` (`mayExecute`), `ReplyComposer` (`partialSummary`), `Prompts` (two sentences about `after`), `ConvKpi`, `MainActivity`
+(calls `TaskEngine.recover` once), `SettingsFragment` (debug screen), `app/build.gradle` (version 2.1, code 12).
+
+## How a crash is handled
+
+| State when the process died | After the restart |
+|---|---|
+| Step RUNNING, tool is idempotent (time, date, battery, torch, app open), plan younger than 2 min | Run again |
+| Step RUNNING, tool is NOT idempotent (timer, alarm, dial) | FAILED + "pata nahi hua ya nahi, phone mein check karo". Never run twice |
+| Step PENDING and ready, plan younger than 2 min | Run now |
+| Anything unfinished in a plan older than 2 min | Dropped ("bahut der ho gayi"), not run late |
+| Waiting for the user's tap | Left as it is; the Haan / Nahi row stays under the message |
+| Finished plan whose reply never reached the chat (younger than 10 min) | The reply is written into the chat |
+
+The reply starts with "Pichli baar app beech mein band ho gayi thi." and is saved in the plan's own message (updated in place, or
+created if the process died before it was saved).
+
+## Deliberate gaps and limits (read before testing)
+
+- **Recovery runs when the app is opened, not in the background.** The hands-free service starting the process does not trigger it.
+- **Steps run sequentially on the main thread**, as Tier-0 always did. The audit's "parallelism limit ~3" only pays off with slow
+  tools; with eight instant tools it would add risk (Clock intents and the torch are not meant for worker threads) and no speed.
+- **`after` means "run after that step finished OK", nothing more.** It cannot say "only if the battery is below 20 %": that needs
+  the result of one step passed into the next, which no current tool uses.
+- **Tool prompt grew.** Every tool now declares `after`: the Gemma / Qwen tools block went from about 2,200 to about 3,000 characters
+  (roughly +250 tokens). `ToolSpecsTest.qwenBlockStaysSmall` still passes with room to spare (limit 3,400). A small model may
+  misuse `after`; an unknown id or a loop is refused and goes through the one repair retry, then a short question.
+- **A second T2 step waits for the first answer.** Both readbacks are never on screen at once, because a message has one Haan / Nahi row.
+- **The 2-minute resume window and the 10-minute confirm window are first guesses.** Tune them from the KPI numbers.
+- **Plans keep the tool arguments** (for a dial step: the number) in `task_plans.json` in app-private storage for up to 24 hours /
+  20 plans. App backup is off. There is no "clear plans" button yet.
+- **The audit says Room.** If you later add Room for the Memory Manager (Phase 4), `TaskQueue` is one class to move.
+- INTERRUPT / LATER priority classes, entity ids, alarm update ("nahi, 9 baje"), plan edit ("petrol wala kaam hata do") and the progress
+  monitor are part 3B.
+
+## Phone check (about 10 minutes, Gemini or Gemma)
+
+1. "torch on karo, battery batao aur time batao" -> one merged reply. Settings > Activity and debug > Debug: task engine shows the plan,
+   three steps COMPLETED.
+2. "pehle torch on karo, phir 5 minute ka timer" -> timer step shows "(after t1)" in the debug screen. KPI: "`after` wale" goes up by 1.
+3. Partial failure: "pehle Zxqvk app kholo, phir torch on karo" -> the app is not found, the torch line says it was skipped because t1
+   did not work, and the reply ends with "Koi kaam nahi hua, 1 chhod diya. ..." (the torch must NOT turn on).
+4. T2: "9876543210 par call karo" -> Haan / Nahi row. Tap Haan: dialer opens. Two numbers in one message: the second readback appears
+   after you answer the first.
+5. Kill-test: Debug: task engine > **Kill-test** > Chalao. The app closes. Open it again within 2 minutes. A new chat "Task engine test"
+   must show: time (already told), battery, date, a line that the timer may or may not have started, the torch skipped, and
+   "3 kaam ho gaye, 1 nahi hua, 1 chhod diya". The KPI screen then shows "kill-process test: 1 pass".
+   If the app was opened later than 2 minutes the test counts as "der se khola" and the rest of the plan is dropped; run it again.

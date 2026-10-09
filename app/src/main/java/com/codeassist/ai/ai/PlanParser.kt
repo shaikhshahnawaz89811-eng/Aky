@@ -51,7 +51,7 @@ object PlanParser {
 
             val call = parseOne(body)
             if (call == null) return Parsed.Invalid("the tool call is not valid JSON", tidy(ack))
-            tasks.add(PlanTask("t" + (tasks.size + 1), call.first, call.second))
+            tasks.add(ToolSpecs.task("t" + (tasks.size + 1), call.first, call.second))
         }
         val problem = ToolSpecs.check(tasks)
         if (problem != null) return Parsed.Invalid(problem, tidy(ack))
