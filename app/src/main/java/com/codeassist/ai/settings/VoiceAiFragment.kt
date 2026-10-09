@@ -42,6 +42,7 @@ import com.codeassist.ai.service.AssistantService
 import com.codeassist.ai.service.BatterySetup
 import com.codeassist.ai.service.HandsFree
 import com.codeassist.ai.service.HealthCheck
+import com.codeassist.ai.voice.OfflineSttKind
 import com.codeassist.ai.voice.OfflineSttStore
 import com.codeassist.ai.voice.OfflineSttUrls
 import com.codeassist.ai.voice.SherpaBridge
@@ -304,7 +305,7 @@ class VoiceAiFragment : Fragment() {
                 "Opt-in. Awaaz sirf phone ke on-device recognizer se suni jaati hai: record nahi hoti, network par nahi jaati " +
                     "(Android 13+ aur offline English India speech pack chahiye). Mic tab tak chalu rehta hai jab tak notification " +
                     "dikhti hai; Stop wahin se dabao. Ye asli keyword-spotter nahi hai: phrase ka pehla shabd aksar kat jaata hai, " +
-                    "isliye Normal level \"code assist\" ya sirf \"assist\" bhi pakad leta hai. False trigger zyada lagein toh Strict karo. " +
+                    "isliye \"hey\" zaroori nahi: Normal level par sirf \"Jarvis\" bolna bhi kaafi hai. False trigger zyada lagein toh Strict karo. " +
                     "Xiaomi / Oppo / Vivo / Samsung ka battery saver service band kar sakta hai: app kholte hi wo dobara chalu ho jaati hai, " +
                     "aur ~15 minute mein ek notification bhi aati hai. Health line batati hai Android ne kitni baar band kiya; " +
                     "Battery setup se phone ki settings sahi karo. Wake test se pata chalta hai phrase 10 mein se kitni baar pakda gaya."
@@ -1142,7 +1143,7 @@ class VoiceAiFragment : Fragment() {
 
         c.icon.setImageResource(R.drawable.ic_mic)
         c.title.text = "Offline speech model"
-        c.sub.text = "sherpa-onnx · NeMo CTC (IndicConformer) · phone par hi chalta hai"
+        c.sub.text = "sherpa-onnx · Whisper (Hinglish) ya NeMo CTC (IndicConformer) · phone par hi chalta hai"
 
         when (status) {
             OfflineSttStore.Status.NOT_IMPORTED -> setBadge(c.badge, "Not imported", GREY)
@@ -1157,7 +1158,13 @@ class VoiceAiFragment : Fragment() {
         val busy = status == OfflineSttStore.Status.DOWNLOADING || status == OfflineSttStore.Status.IMPORTING
         if (!busy && installed) {
             c.detail.visibility = View.VISIBLE
-            c.detail.text = OfflineSttUrls.MODEL_NAME + " + " + OfflineSttUrls.TOKENS_NAME + "\n" +
+            val files = if (OfflineSttStore.kind(ctx) == OfflineSttKind.WHISPER) {
+                "Whisper (Hinglish) · " + OfflineSttUrls.ENCODER_NAME + " + " + OfflineSttUrls.DECODER_NAME +
+                    " + " + OfflineSttUrls.TOKENS_NAME
+            } else {
+                "NeMo CTC · " + OfflineSttUrls.MODEL_NAME + " + " + OfflineSttUrls.TOKENS_NAME
+            }
+            c.detail.text = files + "\n" +
                 Modules.fmt(OfflineSttStore.installedBytes(ctx)) + " · loaded hone par ~300-600 MB RAM"
         } else if (!busy && leftover) {
             c.detail.visibility = View.VISIBLE
@@ -1192,7 +1199,8 @@ class VoiceAiFragment : Fragment() {
             c.message.setTextColor(GREY)
         } else if (status == OfflineSttStore.Status.NOT_IMPORTED) {
             c.message.visibility = View.VISIBLE
-            c.message.text = "Phone se model (.onnx) aur tokens.txt dono chuno (Import files). Link se laana ho toh Download."
+            c.message.text = "Download dabao: Hinglish Whisper model (~161 MB) seedha aa jaayega. Ya Import files se phone ki files chuno " +
+                "(Whisper: encoder + decoder + tokens.txt, CTC: model .onnx + tokens.txt)."
             c.message.setTextColor(GREY)
         } else {
             c.message.visibility = View.GONE
@@ -1252,12 +1260,13 @@ class VoiceAiFragment : Fragment() {
         offlineLinkValue = valueRow(R.drawable.ic_globe, "Download link (optional)", offlineLinkLabel()) { _, _ -> editOfflineLink() }
         noteRow(
             "Opt-in. Default Android wala recognizer hi rehta hai; ye sirf tab chalta hai jab Speech engine = Offline model ho. " +
-                "Model phone se Import karo (model .onnx + tokens.txt chuno) ya link se Download. " +
-                "Ye sherpa-onnx ke NeMo-CTC models (jaise IndicConformer) chalata hai, Vosk / Kaldi models nahi. " +
+                "Default link Hinglish Whisper-base ka hai (Hindi + English mix, Roman likhta hai). Download dabao ya phone se Import karo " +
+                "(Whisper: encoder + decoder + tokens.txt; NeMo-CTC: model .onnx + tokens.txt; .weights files ki zaroorat nahi). " +
+                "Ye sherpa-onnx ke Whisper aur NeMo-CTC (jaise IndicConformer) models chalata hai, Vosk / Kaldi models nahi. " +
                 "Load dabane par model RAM mein rehta hai jab tak Unload na karo. Load na karo toh bolte waqt apne aap load hota hai " +
                 "aur 90 second khaali rehne par khud unload ho jaata hai. " +
                 "Offline model live partial text nahi deta: bolna band karne ke baad poora text aata hai. Ek baar mein ~28 second tak sunta hai. " +
-                "Offline model ke saath upar wali Speech language ka asar nahi hota: model apni bhasha / script mein likhta hai. " +
+                "Offline model ke saath upar wali Speech language ka asar nahi hota: Hinglish model Roman mein likhta hai, CTC model apni script mein. " +
                 "Wake word ab bhi Android ke recognizer se chalta hai."
         )
     }
@@ -1295,7 +1304,11 @@ class VoiceAiFragment : Fragment() {
         }
         AlertDialog.Builder(ctx)
             .setTitle("Download link")
-            .setMessage("Sirf Download button ke liye. HF repo ka link, folder ka link ya direct .onnx link. Folder mein model.int8.onnx aur tokens.txt hona chahiye.")
+            .setMessage(
+                "Sirf Download button ke liye. HF repo / folder ka link ya direct .onnx link. " +
+                    "Whisper folder mein encoder.int8.onnx + decoder.int8.onnx + tokens.txt, " +
+                    "CTC folder mein model.int8.onnx + tokens.txt hona chahiye. Default: Hinglish Whisper-base."
+            )
             .setView(holder)
             .setPositiveButton("Save") { _, _ ->
                 val text = input.text.toString().trim()
@@ -1306,7 +1319,7 @@ class VoiceAiFragment : Fragment() {
                     offlineLinkValue?.text = offlineLinkLabel()
                 }
             }
-            .setNeutralButton("Clear") { _, _ ->
+            .setNeutralButton("Default") { _, _ ->
                 Store.offlineSttUrl = ""
                 offlineLinkValue?.text = offlineLinkLabel()
             }
@@ -1322,7 +1335,13 @@ class VoiceAiFragment : Fragment() {
             editOfflineLink()
             return
         }
-        val note = StringBuilder("Size lagbhag 140-190 MB.")
+        val note = StringBuilder(
+            if (Store.offlineSttUrl == OfflineSttUrls.DEFAULT_URL) {
+                "Hinglish (Whisper-base): encoder + decoder + tokens, lagbhag 161 MB."
+            } else {
+                "Size model par depend karta hai (Whisper lagbhag 160 MB+, CTC lagbhag 140-200 MB)."
+            }
+        )
         if (Modules.isMetered()) note.append(" Abhi mobile data par ho, WiFi behtar rahega.")
         if (!SherpaBridge.isPresent()) note.append("\n\nDhyan: sherpa-onnx library app mein nahi hai, model download hoga par chalega tab jab AAR add hoga.")
         AlertDialog.Builder(ctx)

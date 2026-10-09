@@ -17,7 +17,7 @@ package com.codeassist.ai.voice
 object WakeMatcher {
     enum class Level { STRICT, NORMAL, LOOSE }
 
-    /** [remainder] = what was said after the phrase ("hey code assist time batao" -> "time batao"). */
+    /** [remainder] = what was said after the phrase ("hey jarvis time batao" -> "time batao"). */
     class Result(val matched: Boolean, val score: Float, val remainder: String)
 
     private val NO_MATCH = Result(false, 0f, "")
@@ -151,7 +151,7 @@ object WakeMatcher {
             }
         }
 
-        // recognizers sometimes glue or split words: "codeassist" / "code assist"
+        // recognizers sometimes glue or split words: "jarvis" / "jar vis"
         val joined = joinedWindow(t, key, if (level == Level.STRICT) 0.88f else 0.8f)
         if (joined != null) return joined
 
@@ -214,7 +214,7 @@ object WakeMatcher {
             return "Isme aam naam / bolchaal ka shabd hai (jaise Rani, Sara, Google). Ghar ki baat-cheet se baar-baar trigger hoga."
         }
         val syl = w.sumOf { syllables(it) }
-        if (syl < 3) return "Bahut chhota hai. 3-4 syllable ka alag sa phrase rakho (jaise \"hey code assist\")."
+        if (syl < 3) return "Bahut chhota hai. 3-4 syllable ka alag sa phrase rakho (jaise \"hey jarvis\")."
         if (key.joinToString("").length < 6) return "Key shabd bahut chhote hain; false trigger zyada honge."
         return null
     }

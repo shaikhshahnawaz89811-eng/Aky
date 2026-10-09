@@ -75,4 +75,49 @@ class OfflineSttImportTest {
     fun emptyPickGivesAMessage() {
         assertNotNull(OfflineSttImport.classify(emptyList()).error)
     }
+
+    @Test
+    fun whisperEncoderDecoderAndTokensAreFound() {
+        val p = OfflineSttImport.classify(
+            listOf(e("decoder.int8.onnx", 131_000_000L), e("tokens.txt", 817_000L), e("encoder.int8.onnx", 29_000_000L))
+        )
+        assertNull(p.error)
+        assertEquals(true, p.whisper)
+        assertEquals(2, p.encoder)
+        assertEquals(0, p.decoder)
+        assertEquals(1, p.tokens)
+        assertNull(p.model)
+        assertEquals(0, p.ignored)
+    }
+
+    @Test
+    fun leftoverWeightsFilesAreIgnoredForWhisper() {
+        val p = OfflineSttImport.classify(
+            listOf(
+                e("encoder.int8.onnx", 29_000_000L), e("encoder.weights", 95_000_000L),
+                e("decoder.int8.onnx", 131_000_000L), e("decoder.weights", 195_000_000L), e("tokens.txt", 817_000L)
+            )
+        )
+        assertNull(p.error)
+        assertEquals(0, p.encoder)
+        assertEquals(2, p.decoder)
+        assertEquals(4, p.tokens)
+        assertEquals(2, p.ignored)
+    }
+
+    @Test
+    fun oneWhisperHalfAloneIsStillWhisper() {
+        val p = OfflineSttImport.classify(listOf(e("decoder.int8.onnx", 131_000_000L)))
+        assertNull(p.error)
+        assertEquals(true, p.whisper)
+        assertEquals(0, p.decoder)
+        assertNull(p.encoder)
+    }
+
+    @Test
+    fun aPlainCtcModelIsNotWhisper() {
+        val p = OfflineSttImport.classify(listOf(e("model.int8.onnx", 198_000_000L), e("tokens.txt", 67_000L)))
+        assertEquals(false, p.whisper)
+        assertEquals(0, p.model)
+    }
 }

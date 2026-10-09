@@ -9,6 +9,9 @@ import java.lang.reflect.Type
 
 object Store {
 
+    const val DEFAULT_WAKE_PHRASE = "hey jarvis"
+    private const val OLD_WAKE_PHRASE = "hey code assist"
+
     private lateinit var prefs: SharedPreferences
     private lateinit var appContext: Context
     private val gson = Gson()
@@ -210,9 +213,13 @@ object Store {
         get() = prefs.getString("stt_engine", "platform") ?: "platform"
         set(v) = prefs.edit().putString("stt_engine", v).apply()
 
-    /** Link the offline speech model is downloaded from (a folder, a Hugging Face repo page or a direct .onnx file). */
+    /**
+     * Link the offline speech model is downloaded from (a folder, a Hugging Face repo page or a direct .onnx file).
+     * Empty / never set = the Hinglish Whisper-base model ([com.codeassist.ai.voice.OfflineSttUrls.DEFAULT_URL]).
+     */
     var offlineSttUrl: String
-        get() = prefs.getString("stt_offline_url", "") ?: ""
+        get() = prefs.getString("stt_offline_url", null)?.takeIf { it.isNotBlank() }
+            ?: com.codeassist.ai.voice.OfflineSttUrls.DEFAULT_URL
         set(v) = prefs.edit().putString("stt_offline_url", v.trim()).apply()
 
     var ttsSpeed: Float
@@ -311,10 +318,22 @@ object Store {
         get() = prefs.getBoolean("wake_word", false)
         set(v) = prefs.edit().putBoolean("wake_word", v).apply()
 
-    /** The phrase the user says. Default is 4 syllables and not a common name (audit B4). */
+    /**
+     * The phrase the user says. Default is "hey jarvis": 3 syllables and not a common name (audit B4). The greeting
+     * is never required by WakeMatcher, so just "Jarvis" wakes the app too.
+     * The old built-in default ("hey code assist") is replaced by the new one once; a phrase the person typed
+     * themselves (anything else, or the old one typed again later) is left alone.
+     */
     var wakePhrase: String
-        get() = prefs.getString("wake_phrase", "hey code assist")?.takeIf { it.isNotBlank() } ?: "hey code assist"
-        set(v) = prefs.edit().putString("wake_phrase", v.trim()).apply()
+        get() {
+            val saved = prefs.getString("wake_phrase", null)?.takeIf { it.isNotBlank() } ?: return DEFAULT_WAKE_PHRASE
+            if (saved == OLD_WAKE_PHRASE && !prefs.getBoolean("wake_phrase_jarvis", false)) {
+                prefs.edit().putString("wake_phrase", DEFAULT_WAKE_PHRASE).putBoolean("wake_phrase_jarvis", true).apply()
+                return DEFAULT_WAKE_PHRASE
+            }
+            return saved
+        }
+        set(v) = prefs.edit().putString("wake_phrase", v.trim()).putBoolean("wake_phrase_jarvis", true).apply()
 
     /** "strict" | "normal" | "loose": how many words of the phrase must be heard (see WakeMatcher). */
     var wakeSensitivity: String

@@ -361,7 +361,7 @@ class VadGatedWakeWord(
             val first = matched == null
             matched = r
             matchedHeard = list[0]
-            // wait a moment for the rest of the sentence ("hey code assist <command>")
+            // wait a moment for the rest of the sentence ("hey jarvis <command>")
             if (first) main.postDelayed(partialGrace, PARTIAL_GRACE_MS)
         }
 

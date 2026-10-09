@@ -8,7 +8,9 @@ import java.lang.reflect.Method
  * the library ships as an AAR that is NOT on Maven, so the project must still compile and run when the
  * AAR is missing. Without it [isPresent] is false, the offline option says so, and nothing else changes.
  *
- * It drives an OfflineRecognizer with a NeMo CTC model (AI4Bharat IndicConformer exports are exactly that).
+ * It drives an OfflineRecognizer with either
+ *  - a NeMo CTC model (AI4Bharat IndicConformer exports are exactly that): one model.int8.onnx + tokens.txt, or
+ *  - a Whisper model (for example the Hinglish Whisper-base export): encoder + decoder + tokens.txt.
  * Vosk / Kaldi models are a different format and cannot be loaded by this.
  */
 object SherpaBridge {
@@ -77,14 +79,37 @@ object SherpaBridge {
         }
     }
 
-    /** Loads the model (takes a second or two: run off the main thread). Throws with a readable message. */
-    fun create(modelPath: String, tokensPath: String, threads: Int): Handle {
-        try {
+    /** Loads a NeMo CTC model (takes a second or two: run off the main thread). Throws with a readable message. */
+    fun create(modelPath: String, tokensPath: String, threads: Int): Handle =
+        build(tokensPath, threads) { modelConfig ->
             val nemo = newObject("OfflineNemoEncDecCtcModelConfig")
             set(nemo, "model", modelPath)
-
-            val modelConfig = newObject("OfflineModelConfig")
             set(modelConfig, "nemo", nemo)
+        }
+
+    /**
+     * Loads a Whisper model (encoder + decoder + tokens). [language] is the spoken language code ("hi" for the
+     * Hinglish model: it still writes Roman Hinglish). Throws with a readable message.
+     */
+    fun createWhisper(
+        encoderPath: String,
+        decoderPath: String,
+        tokensPath: String,
+        threads: Int,
+        language: String = "hi"
+    ): Handle = build(tokensPath, threads) { modelConfig ->
+        val whisper = newObject("OfflineWhisperModelConfig")
+        set(whisper, "encoder", encoderPath)
+        set(whisper, "decoder", decoderPath)
+        trySet(whisper, "language", language)
+        trySet(whisper, "task", "transcribe")
+        set(modelConfig, "whisper", whisper)
+    }
+
+    private fun build(tokensPath: String, threads: Int, fill: (Any) -> Unit): Handle {
+        try {
+            val modelConfig = newObject("OfflineModelConfig")
+            fill(modelConfig)
             set(modelConfig, "tokens", tokensPath)
             set(modelConfig, "numThreads", threads)
             set(modelConfig, "debug", false)
@@ -142,7 +167,7 @@ object SherpaBridge {
             "Model load karne ko RAM kam padi. Baaki apps band karke try karo."
         else ->
             "Model load nahi hua: " + (t.message ?: t.javaClass.simpleName) +
-                ". Model NeMo CTC format ka hona chahiye (model.int8.onnx + tokens.txt)."
+                ". Model Whisper (encoder + decoder + tokens.txt) ya NeMo CTC (model.int8.onnx + tokens.txt) format ka hona chahiye."
     }
 
     private fun newObject(simpleName: String): Any =
@@ -152,6 +177,13 @@ object SherpaBridge {
         val name = "set" + property.substring(0, 1).uppercase() + property.substring(1)
         val method = target.javaClass.methods.firstOrNull { it.name == name && it.parameterTypes.size == 1 }
             ?: throw NoSuchMethodException(target.javaClass.simpleName + "." + name)
+        method.invoke(target, value)
+    }
+
+    /** Like [set], but a missing setter is not an error (older / newer AARs may not have an optional property). */
+    private fun trySet(target: Any, property: String, value: Any) {
+        val name = "set" + property.substring(0, 1).uppercase() + property.substring(1)
+        val method = target.javaClass.methods.firstOrNull { it.name == name && it.parameterTypes.size == 1 } ?: return
         method.invoke(target, value)
     }
 }

@@ -21,9 +21,13 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Everything about the optional offline speech model, in one place. It works like the Gemma card:
  * Import files / Download -> Load -> Unload -> Delete.
- *  - where the two files live (filesDir/stt_offline/model.int8.onnx + tokens.txt)
- *  - Import: the person picks the model (.onnx) and tokens.txt from the phone, they are copied and checked
- *  - Download (optional): a resumable download from a link ([OfflineSttUrls] turns the link into two file URLs)
+ *  - where the files live, in filesDir/stt_offline/. Two kinds of model are understood ([OfflineSttKind]):
+ *      CTC     = model.int8.onnx + tokens.txt                        (AI4Bharat IndicConformer)
+ *      WHISPER = encoder.int8.onnx + decoder.int8.onnx + tokens.txt  (the Hinglish Whisper-base export)
+ *    Only one kind is kept on disk at a time; installing one removes the other.
+ *  - Import: the person picks the model files (.onnx) and tokens.txt from the phone, they are copied and checked
+ *  - Download (optional): a resumable download from a link ([OfflineSttUrls] turns the link into file URLs;
+ *    a folder link is tried as Whisper first, then as CTC)
  *  - Load / Unload: the person can load the model into RAM on purpose (it then stays until Unload), or it is
  *    loaded in the background on first use and dropped again after ~90 s without use
  *
@@ -55,6 +59,9 @@ object OfflineSttStore {
 
     private class Cancelled : RuntimeException()
 
+    /** The server answered HTTP 404: that file is not at that link (used to find out which kind of folder a link is). */
+    private class NotFound(message: String) : IllegalStateException(message)
+
     private val cancelFlag = AtomicBoolean(false)
 
     /** True while a download or an import is running (only one at a time). */
@@ -81,12 +88,37 @@ object OfflineSttStore {
 
     fun dir(ctx: Context): File = File(ctx.applicationContext.filesDir, DIR_NAME)
     fun modelFile(ctx: Context): File = File(dir(ctx), OfflineSttUrls.MODEL_NAME)
+    fun encoderFile(ctx: Context): File = File(dir(ctx), OfflineSttUrls.ENCODER_NAME)
+    fun decoderFile(ctx: Context): File = File(dir(ctx), OfflineSttUrls.DECODER_NAME)
     fun tokensFile(ctx: Context): File = File(dir(ctx), OfflineSttUrls.TOKENS_NAME)
 
-    fun installed(ctx: Context): Boolean =
-        modelFile(ctx).length() >= MIN_MODEL_BYTES && tokensFile(ctx).length() >= MIN_TOKENS_BYTES
+    /** Which model is complete on disk (Whisper first), or null when none is. Tokens are checked by [installed]. */
+    fun kind(ctx: Context): OfflineSttKind? = when {
+        encoderFile(ctx).length() >= MIN_MODEL_BYTES && decoderFile(ctx).length() >= MIN_MODEL_BYTES -> OfflineSttKind.WHISPER
+        modelFile(ctx).length() >= MIN_MODEL_BYTES -> OfflineSttKind.CTC
+        else -> null
+    }
 
-    fun installedBytes(ctx: Context): Long = modelFile(ctx).length() + tokensFile(ctx).length()
+    fun installed(ctx: Context): Boolean =
+        kind(ctx) != null && tokensFile(ctx).length() >= MIN_TOKENS_BYTES
+
+    fun installedBytes(ctx: Context): Long = when (kind(ctx)) {
+        OfflineSttKind.WHISPER -> encoderFile(ctx).length() + decoderFile(ctx).length() + tokensFile(ctx).length()
+        OfflineSttKind.CTC -> modelFile(ctx).length() + tokensFile(ctx).length()
+        null -> tokensFile(ctx).length()
+    }
+
+    /** Removes the model files of both kinds (not tokens.txt). */
+    private fun deleteModelFiles(ctx: Context) {
+        modelFile(ctx).delete()
+        encoderFile(ctx).delete()
+        decoderFile(ctx).delete()
+    }
+
+    private fun swapIn(part: File, target: File) {
+        target.delete()
+        if (!part.renameTo(target)) throw IOException(target.name + " rename nahi ho payi")
+    }
 
     /** Model files (or a half-finished download / import) exist on disk. */
     fun hasAnyFiles(ctx: Context): Boolean = dir(ctx).listFiles()?.isNotEmpty() == true
@@ -143,17 +175,17 @@ object OfflineSttStore {
         val app = ctx.applicationContext
         publish(State(Phase.DOWNLOADING, 0L, 0L, null))
         downloadExec.execute {
+            val dir = dir(app)
+            val encPart = File(dir, OfflineSttUrls.ENCODER_NAME + ".part")
+            val decPart = File(dir, OfflineSttUrls.DECODER_NAME + ".part")
+            val modPart = File(dir, OfflineSttUrls.MODEL_NAME + ".part")
+            val tokPart = File(dir, OfflineSttUrls.TOKENS_NAME + ".part")
             try {
                 release()
-                val dir = dir(app)
                 dir.mkdirs()
 
-                val tokensPart = File(dir, OfflineSttUrls.TOKENS_NAME + ".part")
-                fetch(plan.tokensUrl, tokensPart, dir, 1L) { _, _ -> }
-
-                val modelPart = File(dir, OfflineSttUrls.MODEL_NAME + ".part")
                 var lastPublish = 0L
-                fetch(plan.modelUrl, modelPart, dir, MIN_MODEL_BYTES) { done, total ->
+                val report: (Long, Long) -> Unit = { done, total ->
                     val now = System.currentTimeMillis()
                     if (now - lastPublish >= 300L) {
                         lastPublish = now
@@ -161,18 +193,48 @@ object OfflineSttStore {
                     }
                 }
 
-                if (looksLikeWebpage(tokensPart)) {
-                    tokensPart.delete()
-                    modelPart.delete()
-                    throw IllegalStateException("tokens.txt ki jagah webpage mila. Link folder ka ya direct file ka do.")
+                // A Whisper link (or a folder that holds a Whisper model) starts with the encoder. A folder without one
+                // is a CTC folder: the 404 on the encoder is the answer, nothing was downloaded yet.
+                val encoderUrl = plan.encoderUrl
+                val decoderUrl = plan.decoderUrl
+                var whisper = false
+                if (encoderUrl != null && decoderUrl != null) {
+                    try {
+                        fetch(encoderUrl, encPart, dir, MIN_MODEL_BYTES, report)
+                        whisper = true
+                    } catch (e: NotFound) {
+                        if (!plan.folder) throw e
+                    }
                 }
 
-                val tokens = tokensFile(app)
-                val model = modelFile(app)
-                tokens.delete()
-                model.delete()
-                if (!tokensPart.renameTo(tokens) || !modelPart.renameTo(model)) {
-                    throw IOException("Files rename nahi ho payi")
+                if (whisper) {
+                    fetch(decoderUrl!!, decPart, dir, MIN_MODEL_BYTES, report)
+                    fetchTokens(plan, tokPart, dir)
+                } else {
+                    fetchTokens(plan, tokPart, dir)
+                    fetch(plan.modelUrl, modPart, dir, MIN_MODEL_BYTES, report)
+                }
+
+                if (looksLikeWebpage(tokPart)) {
+                    tokPart.delete()
+                    throw IllegalStateException("tokens.txt ki jagah webpage mila. Link folder ka ya direct file ka do.")
+                }
+                if (tokPart.length() < MIN_TOKENS_BYTES) {
+                    tokPart.delete()
+                    throw IllegalStateException("Download ki hui tokens.txt bahut chhoti hai. Link check karo.")
+                }
+
+                // everything arrived: only now replace what was installed before (one kind at a time)
+                deleteModelFiles(app)
+                swapIn(tokPart, tokensFile(app))
+                if (whisper) {
+                    swapIn(encPart, encoderFile(app))
+                    swapIn(decPart, decoderFile(app))
+                    modPart.delete()
+                } else {
+                    swapIn(modPart, modelFile(app))
+                    encPart.delete()
+                    decPart.delete()
                 }
                 publish(State(Phase.IDLE, 0L, 0L, null))
             } catch (_: Cancelled) {
@@ -193,9 +255,21 @@ object OfflineSttStore {
         }
     }
 
+    /** tokens.txt from the link's folder; when the folder has none, the one a level up (shared by all IndicConformer folders). */
+    private fun fetchTokens(plan: OfflineSttUrls.Plan, part: File, dir: File) {
+        try {
+            fetch(plan.tokensUrl, part, dir, 1L) { _, _ -> }
+        } catch (e: NotFound) {
+            val parent = plan.parentTokensUrl ?: throw e
+            part.delete()
+            fetch(parent, part, dir, 1L) { _, _ -> }
+        }
+    }
+
     /**
-     * Copies the picked model (.onnx) and tokens.txt into the app folder and checks them.
-     * Either one may be picked alone if the other is already installed.
+     * Copies the picked model files (CTC: one .onnx; Whisper: encoder + decoder .onnx) and tokens.txt into the app
+     * folder and checks them. Some of them may be picked alone if the rest of the same kind is already installed;
+     * switching to the other kind needs all of its files in one go.
      */
     fun startImport(ctx: Context, uris: List<Uri>) {
         if (uris.isEmpty()) return
@@ -207,6 +281,8 @@ object OfflineSttStore {
         downloadExec.execute {
             val dir = dir(app)
             val modelPart = File(dir, OfflineSttUrls.MODEL_NAME + ".part")
+            val encPart = File(dir, OfflineSttUrls.ENCODER_NAME + ".part")
+            val decPart = File(dir, OfflineSttUrls.DECODER_NAME + ".part")
             val tokensPart = File(dir, OfflineSttUrls.TOKENS_NAME + ".part")
             try {
                 val entries = ArrayList<OfflineSttImport.Entry>()
@@ -219,10 +295,34 @@ object OfflineSttStore {
                 if (pickError != null) throw IllegalStateException(pickError)
 
                 val modelIdx = pick.model
+                val encoderIdx = pick.encoder
+                val decoderIdx = pick.decoder
                 val tokensIdx = pick.tokens
+                val newKind = if (pick.whisper) OfflineSttKind.WHISPER else OfflineSttKind.CTC
+
+                // the tokens.txt of a Whisper model and of a CTC model are different files: never mix them
+                val current = kind(app)
+                if (current != null && current != newKind) {
+                    val complete = if (newKind == OfflineSttKind.WHISPER) {
+                        encoderIdx != null && decoderIdx != null && tokensIdx != null
+                    } else {
+                        modelIdx != null && tokensIdx != null
+                    }
+                    if (!complete) {
+                        throw IllegalStateException(
+                            if (newKind == OfflineSttKind.WHISPER) {
+                                "Whisper model badalne ke liye encoder, decoder aur tokens.txt teeno ek saath chuno."
+                            } else {
+                                "CTC model badalne ke liye model (.onnx) aur tokens.txt dono ek saath chuno."
+                            }
+                        )
+                    }
+                }
+
                 var total = 0L
-                if (modelIdx != null) total += entries[modelIdx].size.coerceAtLeast(0L)
-                if (tokensIdx != null) total += entries[tokensIdx].size.coerceAtLeast(0L)
+                for (idx in listOf(modelIdx, encoderIdx, decoderIdx, tokensIdx)) {
+                    if (idx != null) total += entries[idx].size.coerceAtLeast(0L)
+                }
 
                 release()
                 dir.mkdirs()
@@ -250,30 +350,34 @@ object OfflineSttStore {
                         throw IllegalStateException("Ye tokens.txt nahi lagti (webpage / link file hai). Sahi file chuno.")
                     }
                 }
-                if (modelIdx != null) {
-                    copyUri(app, uris[modelIdx], modelPart, onBytes)
-                    if (modelPart.length() < MIN_MODEL_BYTES) {
-                        throw IllegalStateException("Model file bahut chhoti hai (" + (modelPart.length() / 1024L) + " KB). Sahi .onnx file chuno.")
+                val models = ArrayList<Triple<Int, File, String>>()
+                if (modelIdx != null) models.add(Triple(modelIdx, modelPart, "Model"))
+                if (encoderIdx != null) models.add(Triple(encoderIdx, encPart, "Encoder"))
+                if (decoderIdx != null) models.add(Triple(decoderIdx, decPart, "Decoder"))
+                for ((idx, part, label) in models) {
+                    copyUri(app, uris[idx], part, onBytes)
+                    if (part.length() < MIN_MODEL_BYTES) {
+                        throw IllegalStateException(label + " file bahut chhoti hai (" + (part.length() / 1024L) + " KB). Sahi .onnx file chuno.")
                     }
-                    if (looksLikeWebpage(modelPart)) {
-                        throw IllegalStateException("Ye model file nahi lagti (webpage / git-lfs pointer hai). Poori .onnx file chuno.")
+                    if (looksLikeWebpage(part)) {
+                        throw IllegalStateException("Ye " + label.lowercase() + " file nahi lagti (webpage / git-lfs pointer hai). Poori .onnx file chuno.")
                     }
                 }
 
-                // both pieces passed their checks: only now replace what was installed before
-                if (tokensIdx != null) {
-                    val target = tokensFile(app)
-                    target.delete()
-                    if (!tokensPart.renameTo(target)) throw IOException("tokens.txt rename nahi ho payi")
-                }
-                if (modelIdx != null) {
-                    val target = modelFile(app)
-                    target.delete()
-                    if (!modelPart.renameTo(target)) throw IOException("Model file rename nahi ho payi")
-                }
+                // every piece passed its checks: only now replace what was installed before
+                if (current != null && current != newKind) deleteModelFiles(app)
+                if (tokensIdx != null) swapIn(tokensPart, tokensFile(app))
+                if (modelIdx != null) swapIn(modelPart, modelFile(app))
+                if (encoderIdx != null) swapIn(encPart, encoderFile(app))
+                if (decoderIdx != null) swapIn(decPart, decoderFile(app))
 
                 val missing = ArrayList<String>()
-                if (modelFile(app).length() < MIN_MODEL_BYTES) missing.add("model (.onnx)")
+                if (newKind == OfflineSttKind.WHISPER) {
+                    if (encoderFile(app).length() < MIN_MODEL_BYTES) missing.add("encoder (.onnx)")
+                    if (decoderFile(app).length() < MIN_MODEL_BYTES) missing.add("decoder (.onnx)")
+                } else {
+                    if (modelFile(app).length() < MIN_MODEL_BYTES) missing.add("model (.onnx)")
+                }
                 if (tokensFile(app).length() < MIN_TOKENS_BYTES) missing.add("tokens.txt")
                 if (missing.isEmpty()) {
                     publish(State(Phase.IDLE, 0L, 0L, null))
@@ -286,21 +390,22 @@ object OfflineSttStore {
                     )
                 }
             } catch (_: Cancelled) {
-                modelPart.delete()
-                tokensPart.delete()
+                deletePartFiles(modelPart, encPart, decPart, tokensPart)
                 publish(State(Phase.IDLE, 0L, 0L, null))
             } catch (e: IOException) {
-                modelPart.delete()
-                tokensPart.delete()
+                deletePartFiles(modelPart, encPart, decPart, tokensPart)
                 publish(State(Phase.ERROR, 0L, 0L, "Import ruk gaya (" + (e.message ?: "file") + ")."))
             } catch (e: Exception) {
-                modelPart.delete()
-                tokensPart.delete()
+                deletePartFiles(modelPart, encPart, decPart, tokensPart)
                 publish(State(Phase.ERROR, 0L, 0L, e.message ?: "Import fail ho gaya."))
             } finally {
                 busy.set(false)
             }
         }
+    }
+
+    private fun deletePartFiles(vararg files: File) {
+        for (f in files) f.delete()
     }
 
     private fun queryMeta(app: Context, uri: Uri): Pair<String, Long> {
@@ -371,6 +476,9 @@ object OfflineSttStore {
                     existing = 0L
                     continue
                 }
+                if (code == 404) {
+                    throw NotFound("Server ne HTTP 404 diya: ye file link par nahi hai (" + url.substringAfterLast('/') + ").")
+                }
                 if (code != 200 && code != 206) {
                     throw IllegalStateException("Server ne HTTP $code diya. Link galat ho sakta hai ya file wahan nahi hai.")
                 }
@@ -431,11 +539,20 @@ object OfflineSttStore {
         loading = true
         notifyChanged()
         try {
-            val created = SherpaBridge.create(
-                modelFile(app).absolutePath,
-                tokensFile(app).absolutePath,
-                threads()
-            )
+            val created = if (kind(app) == OfflineSttKind.WHISPER) {
+                SherpaBridge.createWhisper(
+                    encoderFile(app).absolutePath,
+                    decoderFile(app).absolutePath,
+                    tokensFile(app).absolutePath,
+                    threads()
+                )
+            } else {
+                SherpaBridge.create(
+                    modelFile(app).absolutePath,
+                    tokensFile(app).absolutePath,
+                    threads()
+                )
+            }
             handle = created
             return created
         } finally {

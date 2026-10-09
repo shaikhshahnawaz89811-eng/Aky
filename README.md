@@ -46,8 +46,8 @@ on the device. AI replies are real: pick the on-device Qwen2.5 1.5B model or a G
   visible (Android 11+ rule), re-armed the next time the user opens the app if a battery saver killed it.
 - **Wake word** (`VadGatedWakeWord`, `WakeMatcher`): a cheap energy detector keeps the mic; when someone speaks it hands
   a short burst to Android's **on-device** recognizer (Android 13+, offline English India pack) and looks for the phrase.
-  Default phrase "hey code assist", editable with a warning for common names. Sensitivity Strict / Normal / Loose.
-  Words said right after the phrase ("hey code assist time batao") are sent as the user's turn.
+  Default phrase "hey jarvis" (the greeting is optional, so just "Jarvis" works), editable with a warning for common names.
+  Sensitivity Strict / Normal / Loose. Words said right after the phrase ("hey jarvis time batao") are sent as the user's turn.
 - **Where the conversation happens**: the home screen. App open: the mic opens at once (short buzz). App closed or in the
   background: Android does not allow a service to open an activity, so a "Haan? Maine suna" notification appears; tap it.
 - **Mic sharing** (`WakeCoordinator`): the wake engine stops listening while a voice turn is open and comes back about

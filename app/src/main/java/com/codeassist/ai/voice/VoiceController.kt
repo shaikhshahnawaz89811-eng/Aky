@@ -190,7 +190,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     }
 
     /**
-     * The wake phrase was heard. [initial] = words said right after it ("hey code assist time batao" ->
+     * The wake phrase was heard. [initial] = words said right after it ("hey jarvis time batao" ->
      * "time batao"): when present they are sent as the user's turn at once, otherwise the mic opens for a
      * short initial-silence window (a quiet close counts as a possible false wake, KPI wake_empty).
      */

@@ -728,3 +728,46 @@ in this source. `SttEngine` is the slot where one could be added.
 - Kotlin was **not compiled** (no Kotlin compiler here). The only Kotlin edit is the `card(...)` helper and one call.
 - The sherpa-onnx class / method names used by `SherpaBridge` (by reflection) were not checked against the AAR; a mismatch shows
   "Ye sherpa-onnx version app ke code se match nahi karta".
+
+
+# v6: Hinglish Whisper model in the Offline speech model card + wake word "Jarvis"
+
+**Why:** the link `huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/tree/main/hi-hinglish-swift` is a **Whisper-base**
+export (`encoder.int8.onnx` + `decoder.int8.onnx` + `tokens.txt`), not a NeMo CTC model. v5 could only build a NeMo CTC recognizer
+(one `model.int8.onnx`), so Download got an HTTP 404 and Import loaded the wrong file. The `*.weights` files in that folder are
+leftovers of an earlier export and are not needed (the model card says so); do not import them.
+
+## What changed
+- `SherpaBridge`: new `createWhisper(encoder, decoder, tokens, threads, language = "hi")` (reflection, `OfflineWhisperModelConfig`
+  + `OfflineModelConfig.whisper`); `create(...)` (NeMo CTC) is unchanged. Both go through one private `build(...)`.
+- `OfflineSttStore`: two kinds on disk, `OfflineSttKind.CTC` (`model.int8.onnx`) and `WHISPER` (`encoder.int8.onnx` + `decoder.int8.onnx`),
+  sharing `tokens.txt`. One kind at a time; installing one removes the other. `kind()` / `installed()` / `installedBytes()` know both.
+  Download: a **folder link is tried as Whisper first** (a 404 on `encoder.int8.onnx` means "not a Whisper folder", nothing is lost),
+  then as CTC. If the folder has no `tokens.txt`, the one a folder up is used (the IndicConformer repo shares one `tokens.txt`, which
+  also fixes Download for `.../tree/main/hi`). Import: picking encoder + decoder + tokens works; switching kind needs all files at once.
+- `OfflineSttUrls` / `OfflineSttImport`: plan and classify both layouts. A direct link to `encoder...onnx` / `decoder...onnx` is Whisper.
+- `Store.offlineSttUrl`: empty / never set = `OfflineSttUrls.DEFAULT_URL` (the Hinglish folder above), so **Download works with no typing**.
+  In the link dialog the old "Clear" button is now "Default".
+- `VoiceAiFragment`: card texts mention Whisper / CTC, detail line shows which kind is installed, Download dialog says ~161 MB.
+- **Wake word:** `Store.DEFAULT_WAKE_PHRASE = "hey jarvis"`. The old built-in default "hey code assist" is replaced once on the first read
+  after the update (flag `wake_phrase_jarvis`); any phrase the person typed themselves is kept. `WakeMatcher` never requires the greeting,
+  so "Jarvis" alone wakes it. Typing just "Jarvis" in the editor still shows the 2-syllable warning (Phir bhi rakho works).
+- Tests: `OfflineSttUrlsTest`, `OfflineSttImportTest`, `WakeMatcherTest` extended (Whisper layout, shared tokens, Jarvis matching).
+
+## Verification status — read first
+- Kotlin was **not compiled** and the unit tests were **not run** here (no Kotlin compiler / network). CI runs `testDebugUnitTest` after the
+  APKs are uploaded; if a test fails the APK is still available. The expected values in the new tests were worked out by hand.
+- **Not tested on a phone, not tested against the real AAR.** The sherpa-onnx names used by reflection (`OfflineWhisperModelConfig`,
+  setters `encoder` / `decoder` / `language` / `task`, `OfflineModelConfig.setWhisper`) follow the sherpa-onnx Kotlin API; a mismatch shows
+  "Ye sherpa-onnx version app ke code se match nahi karta (...)". `language` and `task` are optional (a missing setter is skipped).
+- The Hinglish files were exported with sherpa-onnx's "attention" Whisper exporter (extra cross-attention output for timestamps). Text
+  recognition is expected to work on a normal AAR; if Load fails with a native error, try a newer `SHERPA_VER`.
+- Whisper reads at most 30 s per run; `OfflineStt` already cuts an utterance at ~28 s.
+- Accuracy (model card): Whisper-base Hinglish WER 38.7% Common Voice, 35.1% FLEURS, 65.2% Indic-Voices (casual speech). The bigger
+  `hi-hinglish-apex` (~1 GB) is more accurate but heavy next to Gemma; it is the same file layout, so the link can be changed to it.
+
+## Phone check
+1. Settings > Voice and AI > Offline speech model > **Download** (Wi-Fi). Wait for 3 files (encoder 29 MB, decoder 131 MB, tokens).
+2. Badge "Unloaded" and the line "Whisper (Hinglish) · encoder.int8.onnx + decoder.int8.onnx + tokens.txt". Tap **Load**: "Loaded".
+3. Speech engine = Offline model. Say a Hinglish sentence: text appears after you stop talking.
+4. Hands-free: say "Jarvis, time batao" (or "hey Jarvis ..."). Wake test in the same screen shows how many of 10 were caught.
