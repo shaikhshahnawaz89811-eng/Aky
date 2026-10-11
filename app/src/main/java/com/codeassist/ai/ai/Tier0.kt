@@ -218,6 +218,15 @@ object Tier0 {
     private fun timer(ctx: Context, t: String): Result? {
         val asked = t.contains("timer") || (t.contains("baad") && remindCue.containsMatchIn(t))
         if (!asked) return null
+        val seconds = secondsFromText(t) ?: return null
+        return runTimer(ctx, seconds)
+    }
+
+    /**
+     * Phase 3B: a length of time in clean text ("10 minute", "2 ghante") as seconds, 1 to 86400, or null.
+     * [t] must already be cleaned with [clean]. Shared by [timer] and [Correction].
+     */
+    fun secondsFromText(t: String): Int? {
         val m = durationRegex.find(t) ?: return null
         val n = m.groupValues[1].toIntOrNull() ?: return null
         val unit = m.groupValues[2]
@@ -226,9 +235,11 @@ object Tier0 {
             unit.startsWith("h") || unit.startsWith("ghant") -> n * 3600
             else -> n * 60
         }
-        if (seconds <= 0 || seconds > 24 * 3600) return null
-        return runTimer(ctx, seconds)
+        return if (seconds <= 0 || seconds > 24 * 3600) null else seconds
     }
+
+    /** Phase 3B: the same text clean-up Tier-0 applies (lower case, Devanagari words, punctuation), for [Correction]. */
+    fun clean(raw: String): String = normalize(raw)
 
     fun runTimer(ctx: Context, seconds: Int): Result {
         if (seconds <= 0 || seconds > 24 * 3600) {
@@ -321,8 +332,21 @@ object Tier0 {
         return words.any { it in wakeWords } && words.none { it in notARequest }
     }
 
+    /** A clock time read from text: [hour] is 24-hour, [tomorrow] is true when the text says kal / tomorrow. */
+    class ClockTime(val hour: Int, val minute: Int, val tomorrow: Boolean)
+
     private fun alarm(ctx: Context, t: String): Result? {
-        if (!t.contains("alarm") && !wantsWake(t)) return null
+        val a = clockTime(t, needCue = true) ?: return null
+        return runAlarm(ctx, a.hour, a.minute, a.tomorrow)
+    }
+
+    /**
+     * Phase 3B: reads a clock time out of clean text. With [needCue] the text must also say "alarm" or ask to be woken
+     * (the Tier-0 rule); [Correction] passes false because "nahi, 9 baje" has neither. Same am / pm rules as before:
+     * a cue word wins, otherwise the nearer of the AM and PM reading.
+     */
+    fun clockTime(t: String, needCue: Boolean): ClockTime? {
+        if (needCue && !t.contains("alarm") && !wantsWake(t)) return null
         val clock = parseClock(t) ?: return null
         val now = Calendar.getInstance()
         var h = clock.hour
@@ -343,7 +367,7 @@ object Tier0 {
             }
         }
         h %= 24
-        return runAlarm(ctx, h, m, t.contains("kal") || t.contains("tomorrow"))
+        return ClockTime(h, m, t.contains("kal") || t.contains("tomorrow"))
     }
 
     /** [h] is already 24-hour. [saidTomorrow] only guards the Clock app's "next occurrence" rule below. */

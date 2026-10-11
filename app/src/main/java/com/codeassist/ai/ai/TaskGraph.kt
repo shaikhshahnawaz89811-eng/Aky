@@ -11,7 +11,8 @@ import java.util.Locale
  *  - validation of the `after` links (unknown id, self link, duplicate id, loop),
  *  - which node runs next (dependencies first, then priority class, then the order the brain wrote them),
  *  - partial failure: when a node fails, only the nodes that depend on it are SKIPPED, the rest keep running,
- *  - what to do with a plan that a process crash left half-done ([recover]).
+ *  - what to do with a plan that a process crash left half-done ([recover]),
+ *  - (3B-2) slow network steps: they run after the quick ones, and a Stop request ([stop]) ends everything that has not finished.
  *
  * The executor ([TaskEngine]) and the durable store ([TaskQueue]) sit on top of this.
  */
@@ -20,8 +21,10 @@ object TaskGraph {
     enum class State { PENDING, RUNNING, WAITING_CONFIRM, COMPLETED, FAILED, CANCELLED, SKIPPED }
 
     /**
-     * Audit Sec 9.6 priority classes. INTERRUPT (stop, correction, safety) is reserved for part 3B; today every tool
-     * is NOW (the user waits for the answer or sees the effect at once) or SOON (a thing set for later).
+     * Audit Sec 9.6 priority classes. Every tool is NOW (the user waits for the answer or sees the effect at once) or
+     * SOON (a thing set for later). INTERRUPT is used for the first time in 3B-2, by [stop]: the user's Stop beats
+     * everything in the queue, including a step that is running. (Corrections in 3B-1 are not plan nodes.) LATER is
+     * still unused: it belongs to the proactive work of Phase 4.
      */
     enum class PClass(val rank: Int) { INTERRUPT(0), NOW(1), SOON(2), LATER(3) }
 
@@ -30,6 +33,9 @@ object TaskGraph {
      * a "10 minute timer" started 40 minutes after it was asked for is worse than none.
      */
     const val RESUME_WINDOW_MS = 2 * 60 * 1000L
+
+    /** Phase 3B-2: a slow (network) step that has not answered after this long is given up; the plan goes on without it. */
+    const val STEP_TIMEOUT_MS = 8000L
 
     /** One step of a plan. Every field is plain data, so the whole plan can be stored as JSON. */
     class Node(
@@ -75,6 +81,13 @@ object TaskGraph {
         /** True for the plan the "kill-process resume" debug test wrote. */
         var debug: Boolean = false
 
+        /** Phase 3B-2: the user pressed Stop. Read by the engine between steps and while a slow step waits. */
+        @Volatile
+        var stopped: Boolean = false
+
+        /** When Stop was pressed (0 = never). */
+        var interruptedAt: Long = 0L
+
         fun node(nodeId: String): Node? = nodes.firstOrNull { it.id == nodeId }
     }
 
@@ -99,6 +112,7 @@ object TaskGraph {
         "alarm_set" -> "Alarm"
         "app_open" -> "App"
         "call_dial" -> "Call"
+        "weather_now" -> "Mausam"
         else -> tool
     }
 
@@ -113,6 +127,9 @@ object TaskGraph {
     }
 
     fun needsConfirm(tool: String): Boolean = ToolSpecs.find(tool)?.tier == "T2"
+
+    /** Phase 3B-2: a network tool that needs a worker thread and a time limit. */
+    fun isSlow(tool: String): Boolean = ToolSpecs.find(tool)?.slow == true
 
     // ---------- building and validating ----------
 
@@ -167,9 +184,17 @@ object TaskGraph {
         return true
     }
 
+    /** Quick steps before slow ones (the timer is set at once, the weather is waited for after it), then priority rank. */
+    private fun better(a: Node, b: Node): Boolean {
+        val sa = if (isSlow(a.tool)) 1 else 0
+        val sb = if (isSlow(b.tool)) 1 else 0
+        if (sa != sb) return sa < sb
+        return a.pclass.rank < b.pclass.rank
+    }
+
     /**
-     * The next node to run: PENDING, every dependency COMPLETED, lowest priority rank first, and among equals the one
-     * the brain wrote first. With [allowConfirm] false a node that needs the user's tap is not offered (only one
+     * The next node to run: PENDING, every dependency COMPLETED, quick before slow, then lowest priority rank first, and
+     * among equals the one the brain wrote first. With [allowConfirm] false a node that needs the user's tap is not offered (only one
      * confirmation can wait at a time, because a chat message has one Haan / Nahi row).
      */
     fun nextReady(plan: Plan, allowConfirm: Boolean): Node? {
@@ -179,7 +204,7 @@ object TaskGraph {
             if (!allowConfirm && needsConfirm(n.tool)) continue
             if (!depsCompleted(plan, n)) continue
             val b = best
-            if (b == null || n.pclass.rank < b.pclass.rank) best = n
+            if (b == null || better(n, b)) best = n
         }
         return best
     }
@@ -262,7 +287,14 @@ object TaskGraph {
         var changed = false
         val stale = now - plan.createdAt > RESUME_WINDOW_MS
         for (n in plan.nodes) {
-            if (n.state == State.RUNNING) {
+            if ((n.state == State.RUNNING || n.state == State.PENDING) && isSlow(n.tool)) {
+                // a network step is never resumed after a restart: the answer would come late and the engine that
+                // waits for it is gone. It is read-only, so nothing is lost: the user just asks again.
+                n.state = State.CANCELLED
+                n.reason = "app band hui thi"
+                n.line = label(n.tool) + ": app band hui thi, isliye ye nahi chala. Dobara bolo."
+                changed = true
+            } else if (n.state == State.RUNNING) {
                 val idempotent = ToolSpecs.find(n.tool)?.idempotent == true
                 if (idempotent && !stale) {
                     n.state = State.PENDING
@@ -288,6 +320,32 @@ object TaskGraph {
         }
         if (propagateSkips(plan) > 0) changed = true
         return changed
+    }
+
+    // ---------- stop (3B-2) ----------
+
+    /**
+     * The user pressed Stop (INTERRUPT class, audit Sec 9.6): every step that has not finished is CANCELLED, including a
+     * slow step that is still waiting for its answer (that answer, if it ever comes, is thrown away). Steps that
+     * already finished stay as they are: an alarm that was set is still set, and its Undo chip stays. Dependents are
+     * not marked SKIPPED, because all of them are cancelled with the same reason. Returns how many steps were cancelled.
+     */
+    fun stop(plan: Plan, now: Long): Int {
+        plan.stopped = true
+        plan.interruptedAt = now
+        var count = 0
+        for (n in plan.nodes) {
+            if (n.state == State.PENDING || n.state == State.WAITING_CONFIRM || n.state == State.RUNNING) {
+                val was = n.state
+                n.state = State.CANCELLED
+                n.reason = "tumne roka"
+                n.line = if (was == State.RUNNING) label(n.tool) + ": tumne beech mein roka."
+                else label(n.tool) + ": tumne roka, isliye nahi chalaya."
+                n.readback = null
+                count++
+            }
+        }
+        return count
     }
 
     // ---------- reply ----------
@@ -329,6 +387,7 @@ object TaskGraph {
         val sb = StringBuilder()
         sb.append(fmt.format(Date(plan.createdAt))).append(" · plan ").append(plan.id.take(6))
         if (plan.debug) sb.append(" · TEST")
+        if (plan.stopped) sb.append(" · STOP (INTERRUPT)")
         sb.append(" · ").append(plan.nodes.size).append(" kaam\n")
         for (n in plan.nodes) {
             sb.append("  ").append(n.id).append(' ').append(n.tool).append(' ').append(n.state.name)

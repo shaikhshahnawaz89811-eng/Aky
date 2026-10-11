@@ -92,39 +92,57 @@ object LocalMemory {
     private fun titleCase(s: String): String =
         s.split(" ").joinToString(" ") { w -> if (w.isEmpty()) w else w.substring(0, 1).uppercase() + w.substring(1) }
 
-    /** Handles a whole-message memory command. Returns null when [text] is an ordinary message. */
-    fun command(text: String, current: List<String>): Outcome? {
+    /** What a whole-message memory command asks for (Phase 4A: the grammar is separate from what is done with it). */
+    sealed class Cmd {
+        object Forget : Cmd()
+        object Show : Cmd()
+        class Remember(val note: String) : Cmd()
+
+        /** "yaad rakho ki mera naam or meri bhanji ko": a cut-off sentence, not worth keeping. */
+        object Incomplete : Cmd()
+    }
+
+    const val INCOMPLETE_REPLY =
+        "Ye adhoora lag raha hai. Poora likho, jaise: \"yaad rakho ki meri bhanji ka naam Gaib hai\"."
+
+    /** Reads [text] as a memory command, or null when it is an ordinary message. */
+    fun parse(text: String): Cmd? {
         val t = text.trim()
         if (t.isEmpty() || t.length > 240) return null
-
-        if (forgetRx.matches(t)) {
-            return if (current.isEmpty()) {
-                Outcome("Abhi mujhe aapke baare mein kuch yaad hi nahi tha.", null)
-            } else {
-                Outcome("Theek hai, maine sab bhula diya.", emptyList())
-            }
-        }
-        if (showRx.matches(t)) {
-            if (current.isEmpty()) {
-                return Outcome(
-                    "Abhi mujhe aapke baare mein kuch yaad nahi hai. Bolo \"yaad rakho ki ...\" ya \"mera naam ... hai\".",
-                    null
-                )
-            }
-            val lines = current.joinToString("\n") { "• " + readable(it) }
-            return Outcome("Mujhe aapke baare mein ye yaad hai:\n$lines\n\nSab bhulana ho toh bolo \"bhool jao\".", null)
-        }
+        if (forgetRx.matches(t)) return Cmd.Forget
+        if (showRx.matches(t)) return Cmd.Show
         val m = if (t.endsWith("?")) null else rememberRx.find(t)
         if (m != null) {
             val note = m.groupValues[1].trim().trimEnd('.', '!').replace(Regex("\\s+"), " ").take(MAX_TEXT)
             if (note.length < 3) return null
-            if (note.lowercase().substringAfterLast(' ') in danglingEnd) {
-                return Outcome("Ye adhoora lag raha hai. Poora likho, jaise: \"yaad rakho ki meri bhanji ka naam Gaib hai\".", null)
-            }
-            val merged = merge(current, listOf(encode("note:" + note.lowercase().take(40), note)))
-            return Outcome("Theek hai, yaad rakh liya: $note", merged)
+            if (note.lowercase().substringAfterLast(' ') in danglingEnd) return Cmd.Incomplete
+            return Cmd.Remember(note)
         }
         return null
+    }
+
+    /** Handles a whole-message memory command on the old "kind|text" list. Returns null when [text] is an ordinary message. */
+    fun command(text: String, current: List<String>): Outcome? {
+        return when (val c = parse(text) ?: return null) {
+            is Cmd.Forget ->
+                if (current.isEmpty()) Outcome("Abhi mujhe aapke baare mein kuch yaad hi nahi tha.", null)
+                else Outcome("Theek hai, maine sab bhula diya.", emptyList())
+            is Cmd.Show ->
+                if (current.isEmpty()) {
+                    Outcome(
+                        "Abhi mujhe aapke baare mein kuch yaad nahi hai. Bolo \"yaad rakho ki ...\" ya \"mera naam ... hai\".",
+                        null
+                    )
+                } else {
+                    val lines = current.joinToString("\n") { "• " + readable(it) }
+                    Outcome("Mujhe aapke baare mein ye yaad hai:\n$lines\n\nSab bhulana ho toh bolo \"bhool jao\".", null)
+                }
+            is Cmd.Incomplete -> Outcome(INCOMPLETE_REPLY, null)
+            is Cmd.Remember -> {
+                val merged = merge(current, listOf(encode("note:" + c.note.lowercase().take(40), c.note)))
+                Outcome("Theek hai, yaad rakh liya: " + c.note, merged)
+            }
+        }
     }
 
     // ---------- storing ----------

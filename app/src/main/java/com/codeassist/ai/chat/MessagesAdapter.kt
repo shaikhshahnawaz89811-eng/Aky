@@ -277,7 +277,7 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
             if (waiting) {
                 thinking.visibility = View.VISIBLE
-                thinking.text = (message.note ?: "Soch raha hoon") + "…"
+                thinking.text = com.codeassist.ai.ai.Persona.fit(message.note ?: "Soch raha hoon", Store.personaGender) + "…"
                 resumePulse()
             } else {
                 thinking.visibility = View.GONE

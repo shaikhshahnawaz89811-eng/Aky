@@ -43,6 +43,9 @@ object ChatRunner {
         @Volatile var tps: Float = 0f
         /** Short note for the trace: which tools the brain called, or why a plan was refused. */
         @Volatile var detail: String = ""
+
+        /** Phase 3B-2: the stored plan this run is executing (set by the task engine), so Stop can end it. */
+        @Volatile var planId: String? = null
         var job: Job? = null
     }
 
@@ -64,16 +67,21 @@ object ChatRunner {
     @Volatile
     var listener: Listener? = null
 
+    /** Application context of the running reply, kept for [stop] (the Stop button has no context of its own). */
+    private var appCtx: Context? = null
+
     fun isRunning(): Boolean = current != null
 
     /** Answers the last user message of [chatId]. Returns null if a reply is already running. */
     fun start(ctx: Context, chatId: String, viaVoice: Boolean): Run? {
         if (current != null) return null
         val app = ctx.applicationContext
+        appCtx = app
         Store.init(app)
         Modules.init(app)
         ActivityLog.init(app)
         ConvKpi.init(app)
+        MemoryStore.init(app)
         val all = Store.messages(chatId)
         val userIndex = all.indexOfLast { it.role == Role.USER }
         if (userIndex < 0) return null
@@ -124,7 +132,8 @@ object ChatRunner {
     }
 
     /**
-     * Answers that need no model at all, in this order: a bare "off" after a torch reply, a memory command
+     * Answers that need no model at all, in this order: a correction of the last alarm / timer ("nahi, 9 baje", Phase 3B),
+     * taking one step away from the plan just shown ("petrol wala kaam hata do", Phase 3C), a bare "off" after a torch reply, a memory command
      * ("yaad rakho ...", "bhool jao"), then the Tier-0 phone actions. When none matches, the message is read for
      * facts the user states about themselves ("mera naam ... hai") and the brain answers.
      */
@@ -132,21 +141,13 @@ object ChatRunner {
         if (latest.attachments.isNotEmpty()) return null
         val lastAi = history.lastOrNull { it.role == Role.AI }
         val lastTool: String? = if (lastAi != null && lastAi.engine == "tool") lastAi.note else null
-        val quick = Tier0.followUp(app, latest.text, lastTool)
-            ?: memoryCommand(latest.text)
+        val quick = CorrectionRunner.tryFix(app, latest.text, lastAi)
+            ?: PlanEditRunner.tryEdit(app, latest.text, lastAi)
+            ?: Tier0.followUp(app, latest.text, lastTool)
+            ?: MemoryStore.command(latest.text)
             ?: Tier0.handle(app, latest.text)
-        if (quick == null) {
-            val found = LocalMemory.extract(latest.text)
-            if (found.isNotEmpty()) Store.userFacts = LocalMemory.merge(Store.userFacts, found)
-        }
+        if (quick == null) MemoryStore.autoLearn(latest.text)
         return quick
-    }
-
-    private fun memoryCommand(text: String): Tier0.Result? {
-        val out = LocalMemory.command(text, Store.userFacts) ?: return null
-        val updated = out.updated
-        if (updated != null) Store.userFacts = updated
-        return Tier0.Result("Yaad", out.reply)
     }
 
     private fun isActionReply(m: Message): Boolean =
@@ -181,9 +182,20 @@ object ChatRunner {
     fun stop() {
         val run = current ?: return
         run.cancelled = true
+        // Phase 3B-2: a plan that is running is stopped first (steps not finished are cancelled, the engine sees the flag),
+        // and its reply so far becomes the message, so what already happened and its Undo chip are not lost.
+        val planId = run.planId
+        val app = appCtx
+        val planOut: PlanExecutor.Outcome? = if (planId != null && app != null) PlanExecutor.stop(app, planId) else null
         run.job?.cancel()
         val partial = run.text.trim()
-        val msg = if (partial.isNotEmpty()) {
+        val msg = if (planOut != null) {
+            val undo: String? = if (planOut.undoIds.isEmpty()) null else planOut.undoIds.joinToString(",")
+            Message(
+                id = run.messageId, role = Role.AI, text = planOut.text, engine = run.engine,
+                note = "Beech mein roka gaya", undoId = undo, actions = planOut.chip, pending = planOut.pendingJson
+            )
+        } else if (partial.isNotEmpty()) {
             Message(
                 id = run.messageId, role = Role.AI, text = partial,
                 engine = run.engine, note = "Beech mein roka gaya"
@@ -194,9 +206,16 @@ object ChatRunner {
         finish(run, msg)
     }
 
-    private fun finish(run: Run, msg: Message?) {
+    private fun finish(run: Run, original: Message?) {
         if (current !== run) return
         current = null
+        // Phase 4B: sentences the app wrote itself (phone-action and plan replies) follow the "Bolne ka lehja" setting;
+        // what a model wrote is left as it is (the model is told the form in its prompt)
+        val msg = if (original != null && (original.engine == "tool" || run.planId != null)) {
+            original.copy(text = Persona.fit(original.text, Store.personaGender))
+        } else {
+            original
+        }
         record(run, msg)
         if (msg != null) persist(run.chatId, msg)
         listener?.onFinished(run, msg)
@@ -332,7 +351,7 @@ object ChatRunner {
         // Tools only for a plain message: text from an attached file is untrusted and must never trigger an action
         // (audit Sec 11.3, prompt injection).
         val useTools = latest.attachments.isEmpty()
-        val system = Prompts.system(run.viaVoice) + (if (useTools) "\n" + Prompts.TOOL_RULES else "")
+        val system = Prompts.system(run.viaVoice, latest.text) + (if (useTools) "\n" + Prompts.TOOL_RULES else "")
         var lastPost = 0L
         val streamed = withContext(Dispatchers.IO) {
             GeminiClient.streamWithToolsTimeouts(
@@ -365,7 +384,7 @@ object ChatRunner {
         "Samajh nahi paya ki phone par kya karna hai. Ek baar saaf bolo, jaise: \"kal subah 8 baje ka alarm laga do\"."
 
     /** Checks the plan, runs it behind the policy gate and turns the result into one reply message. */
-    private fun planMessage(
+    private suspend fun planMessage(
         app: Context, run: Run, engine: String, caption: String, ack: String,
         tasks: List<PlanTask>, skipped: List<String>
     ): Message {
@@ -379,7 +398,18 @@ object ChatRunner {
         }
         run.label = "Phone action chal raha hai"
         postProgress(run)
-        val out = PlanExecutor.run(app, ack, tasks, run.chatId, run.messageId)
+        val monitor = object : TaskEngine.Monitor {
+            override fun onPlan(planId: String) {
+                run.planId = planId
+            }
+
+            override fun onProgress(line: String) {
+                run.label = line
+                run.phase = line
+                postProgress(run)
+            }
+        }
+        val out = PlanExecutor.run(app, ack, tasks, run.chatId, run.messageId, monitor)
         run.detail = "tools: " + tasks.joinToString(",") { it.tool }
         val undo: String? = if (out.undoIds.isEmpty()) null else out.undoIds.joinToString(",")
         return Message(
@@ -455,7 +485,7 @@ object ChatRunner {
 
         // Phone tools only for a plain, short, action-looking message (same rule as before; a few hundred tokens).
         val wantTools = latest.attachments.isEmpty() && ActionHint.looksLikeAction(latest.text)
-        var system = Prompts.systemLocal(run.viaVoice)
+        var system = Prompts.systemLocal(run.viaVoice, latest.text)
         if (wantTools) {
             system += "\n" + Prompts.TOOL_RULES + "\n" + Prompts.LOCAL_TOOL_HINT + "\n\n" + ToolSpecs.qwenToolsBlock()
         }

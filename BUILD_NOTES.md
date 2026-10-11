@@ -891,3 +891,261 @@ created if the process died before it was saved).
    must show: time (already told), battery, date, a line that the timer may or may not have started, the torch skipped, and
    "3 kaam ho gaye, 1 nahi hua, 1 chhod diya". The KPI screen then shows "kill-process test: 1 pass".
    If the app was opened later than 2 minutes the test counts as "der se khola" and the rest of the plan is dropped; run it again.
+
+
+---
+
+# Phase 3, part 3B-1 (corrections: "nahi, 9 baje") — honest status
+
+**Same situation as every part before: not compiled, not run on a phone.** No Kotlin compiler and no Android SDK in the sandbox.
+What was done instead: brackets / strings balance in every edited Kotlin file (script), imports and member names checked by hand,
+and the pure logic (text clean-up, clock and duration reading, `Correction.kindOf / parse / alarmTimeOfToken`) was re-implemented
+line by line in Python and run on every scenario `CorrectionTest` asserts (all pass). Run `./gradlew assembleDebug testDebugUnitTest`
+(CI does) and send the compiler output if anything fails.
+
+## What changed
+New: `ai/Correction.kt` (pure grammar), `ai/CorrectionRunner.kt` (phone side), `test/.../CorrectionTest.kt`, `PLAN.md`.
+Changed: `Tier0` (clock and duration reading moved into public `clockTime`, `secondsFromText`, `clean`; `alarm()` and `timer()` call them,
+behaviour unchanged), `ChatRunner.quickReply` (correction is tried first), `ConvKpi` (new block), `app/build.gradle` (2.2, code 13).
+
+## Rules in the code
+- The thing being corrected is the last AI reply itself (title, time, its single undo id). No second store.
+- Window 30 minutes; a reply with several actions (undo id list) is never corrected; an already-undone reply is not corrected.
+- Alarm reply is corrected only with a clock time, timer reply only with a length of time. A mismatch returns null (not guessed).
+- Message must be 10 words or fewer and carry a cue ("nahi", "galat", "wait" ...) before the new value, or be a plain cancel phrase.
+
+## Deliberate gaps and limits (read before testing)
+- **Clock app dependency.** Dismiss is an Android intent (`ACTION_DISMISS_ALARM` by label, `ACTION_DISMISS_TIMER` for the running timer).
+  Some phone makers' Clock apps ignore it; the reply then says to remove the old one by hand. The KPI line counts both cases.
+- **Timer order is the reverse of alarm order**: Android has no "which timer" for dismiss, so the old timer is stopped first and the new one
+  set right after. If the new one cannot be set the reply says the old one was stopped.
+- **No plan edit yet** ("petrol wala kaam hata do", audit Appendix A #20), no change of a call number, no INTERRUPT / LATER priority
+  use: those come with the progress monitor (3B-2) and the labelled test set (3C). See `PLAN.md`.
+- Without a cue word ("9 baje subah" alone) nothing is treated as a correction: it stays a normal message.
+
+## Phone check (about 5 minutes)
+1. "alarm 8 baje subah laga do", then "nahi, 9 baje subah". Expect: new alarm confirmed, "Pehla alarm hatane ki request bhej di".
+   Open the Clock app: only the new alarm should be there.
+2. "10 minute ka timer", then "nahi 5 minute". Expect: one 5-minute timer running.
+3. "alarm 7 baje", then "rehne do". Expect: the alarm is gone (Clock app check).
+4. "alarm 7 baje", then "nahi 7 baje". Expect: "pehle se hi 07:00 ka hai, kuch nahi badla".
+5. Settings > Activity and debug > Debug: conversation KPIs > "Corrections (Phase 3B)" counts go up.
+
+
+---
+
+# Phase 3, parts 3B-2 and 3C (weather + time limit + progress + Stop, then eval + plan edit + Plans clear) — honest status
+
+**Same situation as every part before: not compiled, not run on a phone.** The sandbox has Java but no Kotlin compiler and no
+Android SDK (and no network to fetch them). What was done instead: brackets / strings balance in all 136 Kotlin files (script, the
+whole project, not only the new ones); imports, member names and signatures checked by hand against the code they call; the data
+file `eval_multi.json` was checked by a script (30 cases, unique ids, every expected plan passes the same rules as `ToolSpecs.check`);
+and the grammar of `PlanEdit.parse` plus the Qwen tool-block size were re-implemented in Python and run on every scenario the tests
+assert (all pass). **The new JVM tests have not been run.** Run `./gradlew assembleDebug testDebugUnitTest` (CI does) and send
+the compiler output if anything fails. Phase 0 of `PLAN.md` (the compile gate) is still the most important open item.
+
+## What the audit's Phase 3 asks for, and where it stands now
+
+| Audit item (Sec 13, Phase 3) | Part | Status |
+|---|---|---|
+| Multi-intent DAG, durable queue, partial failure, T2 confirm, crash resume | 3A | done (earlier zip) |
+| Corrections + undo | 3B-1 | done (earlier zip) |
+| Priority classes | 3A + 3B-2 | NOW / SOON used, **INTERRUPT used for Stop**. LATER is still unused (proactive work, Phase 4) |
+| Progress monitor | 3B-2 | done for the screen: one monitor, driven by the real step state, 2 lines per step at most. **Not spoken** (see gaps) |
+| Per-node timeout | 3B-2 | 8 s for the slow tool |
+| Plan edit (Appendix A #20) | 3C | done for the steps the app has (not for "petrol": no such tool) |
+| Multi-intent >= 85 % | 3C | the **measuring tool is done; the measurement is yours to run** (Debug: eval). I cannot run a model here, so there is no number yet |
+
+## What changed (files)
+
+New: `ai/StepTimeout.kt`, `ai/WeatherClient.kt`, `ai/PlanProgress.kt`, `ai/PlanEdit.kt`, `ai/PlanEditRunner.kt`, `ai/EvalCases.kt`,
+`ai/EvalRunner.kt`, `assets/eval_multi.json`; tests `StepTimeoutTest`, `WeatherClientTest`, `PlanProgressTest`,
+`TaskGraphPhase3B2Test`, `PlanEditTest`, `EvalCasesTest`, plus 1 case in `ActionHintTest`.
+Changed: `PlanTypes` (`ToolSpec.slow`), `ToolSpecs` (`weather_now`, city rule, slow-cannot-wait-for-confirm rule), `ToolRunner`,
+`TaskGraph` (quick-before-slow order, `stop`, `STEP_TIMEOUT_MS`, crash rule for network steps, `Plan.stopped`), `TaskEngine` (the run is
+now a suspend function: slow steps on a worker thread, `stop`, `applyEdit`, `clearPlans`, `Monitor`), `PlanExecutor` (suspend `run`,
+`stop`), `ChatRunner` (plan id on the run, Stop ends the plan, progress lines, plan edit in the quick-reply chain), `ActionHint` and
+`Prompts` (weather words, one example), `ConvKpi` (two new blocks, eval result in the exit checklist), `SettingsFragment` (Eval, Plans
+clear), `app/build.gradle` (2.3, code 14), `PLAN.md`, `README.md`.
+
+## Rules in the code
+
+- A slow tool is run only by `TaskEngine.executeAsync` (chat reply). Every other caller (the Haan tap, crash recovery, plan edit) uses the
+  main-thread loop, which never runs a network call: a slow step that somehow shows up there is cancelled, not run.
+- `ToolSpecs.check` refuses a plan in which a slow step waits (directly or through other steps) for a step that needs the tap. The brain
+  gets its one repair retry, then the short question. The other direction (the call waits for the weather) is allowed.
+- Stop: `TaskGraph.stop` cancels PENDING / RUNNING / WAITING_CONFIRM steps in one go and sets `Plan.stopped`. The worker thread sees the flag
+  within 100 ms. Whatever the network call returns afterwards is thrown away (KPI "Stop ke baad aaya jawab pheka").
+- Plan edit only looks at the message right after a plan reply (the plan whose reply is the last AI message, younger than 10 minutes). It
+  runs after the correction check, so "wo alarm hata do" is still a correction.
+- The qwen tool block grew from 2,994 to **3,319** characters with `weather_now` (limit in `ToolSpecsTest.qwenBlockStaysSmall` is 3,400).
+  That is the last room: the next tool needs a decision about the small model's prompt, not a quiet increase of the limit.
+
+## Deliberate gaps and limits (read before testing)
+
+- **The eval number does not exist yet.** Run Debug: eval on the phone with Gemini and with Gemma and send me the "Galat cases" text.
+  The 30 cases are my labels: if you disagree with one (for example "kal subah uthna hai": I label it as a question, because no time is
+  given), tell me and I change the label, not the code.
+- **Gemma eval takes several minutes** (30 turns of the small model). Gemini takes about a minute. Eval uses your saved Gemini model and
+  temperature, so two runs can differ slightly.
+- **Appendix A #19 ("petrol") and #20 ("petrol wala kaam hata do")** need tools the app does not have. #19 is in the set as "ask one
+  question"; #20 is handled for the tools that exist. There is no petrol, location or navigation tool.
+- **Progress is on screen only.** The audit also wants it spoken ("thoda time lag raha hai"); that belongs with the filler / phrase-cache
+  work and needs the voice path to know about the plan. Not built.
+- **One slow tool only, one step waited for at a time.** The audit's "parallelism limit ~3" is still not built. Two weather requests in
+  one message run one after the other, so the second may start with little time left of its own 8 s (each has its own 8 s, so the reply
+  can take up to 16 s).
+- **No city given = a question.** There is no "home city" setting; the brain is told to ask one short question. The offline Gemma may call
+  the tool with a wrong or invented city: the geocoder then says "naam ka shehar nahi mila" or finds some other place with that name.
+- **Weather needs internet**: offline it says so ("Internet nahi mil raha") and the rest of the plan runs. No cache.
+- **A restart drops a network step** (weather) instead of re-asking; the reply says "dobara bolo".
+- **Plan edit of a finished step** uses the activity-log Undo: for alarms and timers that is the Clock-app dismiss request, which some
+  Clock apps ignore (same limit as 3B-1). Torch is reliable. A finished call / app open cannot be taken back; it says so.
+- **Plans clear** also removes a plan that is waiting for a Haan tap: the tap then says the plan was not found and runs nothing.
+- **INTERRUPT is used by Stop only.** A spoken "ruko" while a plan runs is still handled by the voice layer (it stops speaking) and not
+  by the plan; only the Stop button ends the plan.
+
+## Phone check (about 10 minutes, Gemini first)
+
+1. "Mumbai ka mausam batao" -> one sentence with temperature, sky, humidity, wind. Note under the reply while waiting: "Mausam chal raha hai".
+2. "Pune ka mausam batao aur 5 minute ka timer lagao" -> the timer is set at once, the reply has both lines. Debug: task engine shows both steps COMPLETED.
+3. Airplane mode, then "Delhi ka mausam batao aur torch on karo" -> the torch turns on, the reply says the weather needs internet, ends with "1 kaam ho gaya, 1 nahi hua".
+4. Slow network (or a VPN that stalls): the same request -> after about 4 s the note says the answer is late; after 8 s the weather step fails, the rest is done. KPI: "8 s timeout" goes up.
+5. Stop while the weather waits (use step 4): reply says "Theek hai, ruk gaya." and keeps what already ran. KPI: "Stop (INTERRUPT)" goes up.
+6. "9876543210 par call karo aur torch on karo" -> torch on, Haan / Nahi row for the call. Then "call wala kaam hata do" -> the row disappears, new short reply "Call wala kaam hata diya". Then try "petrol wala kaam hata do" right after another plan -> honest "naam ka koi kaam nahi mila" with the list.
+7. "torch on karo aur battery batao", then "torch wala kaam hata do" -> torch goes off ("wapas kar diya"). "battery wala kaam hata do" -> "sirf ek jawab tha".
+8. Settings > Debug: eval (30 Hinglish cases) > Chalao. Send me the result text. Then KPI > "Phase 3 exit checklist".
+9. Settings > Plans clear -> "N plans hata diye"; Debug: task engine shows "Abhi koi plan nahi".
+
+
+
+---
+
+# Phase 4A: Memory Manager (audit Sec 9.5) — honest status
+
+**Same situation as every part before: not compiled, not run on a phone.** No Kotlin compiler, no Android SDK here. Done instead:
+brackets / strings balance in all 144 Kotlin files; every new symbol checked to exist; the grammar and number rules (`MemoryGuard`,
+`MemoryCommands`, `LocalMemory.parse`) re-implemented in Python and run on all 50 inputs the new tests use (all as asserted). **The
+new JVM tests (`MemoryGuardTest`, `MemoryBookTest`, `MemoryCommandsTest`) have not been run.** The old `LocalMemoryTest` is untouched and
+must still pass (`LocalMemory.command` behaves as before; it is now built on the new `LocalMemory.parse`). Run
+`./gradlew assembleDebug testDebugUnitTest` and send the compiler output if anything fails. Phase 0 (compile gate) is still the most
+important open item.
+
+## What it does
+
+- **Memory (yaad) screen**: Settings > AI service > Memory (yaad). List in two groups, "Hamesha ke liye" and "Abhi ke liye, 24 ghante";
+  search box; tap an item for Badlo (edit), Hatao (delete), Hamesha rakho (for a 24 hour item); "Pichhle kuch minute bhool jao" (5 / 30 /
+  60 minutes / 24 hours); "Export (text)" through the share sheet; "Sab bhool jao"; Private mode switch; "Gemini ko bhi yaad bhejo" switch.
+- **Layers**: Hamesha = until deleted. Abhi ke liye = 24 hours. Audit "Number yaad rakhna": a number of 6 to 11 digits (or with +country code)
+  is saved as Abhi ke liye and read back digit by digit; "hamesha yaad rakho ki ..." or "yaad rakho hamesha ke liye ki ..." makes it permanent.
+  The audit's "Sirf abhi ke liye ya hamesha ke liye?" question is replaced by this default, because a question needs a pending-answer
+  state in the chat that does not exist yet.
+- **Never stored** (`MemoryGuard`, even when asked, also when editing): words OTP, password, PIN, CVV, Aadhaar, card number, account number,
+  PAN card / number, API / private / secret key; a PAN-shaped code; numbers of 12 digits (except 91 + mobile) or 13+ digits. A postal "pin code"
+  with 6 digits is allowed. Reply: "Ye main yaad nahi rakhunga ...".
+- **Chat commands** (work offline, never reach a model): "yaad rakho ki ...", "tum mere baare mein kya jaante ho", "bhool jao",
+  "pichhle 10 minute bhool jao" (also "pichhle 1 ghante ki yaad hata do", "forget last 30 minutes"; at most 24 hours), "private mode on / off".
+- **Private mode**: nothing new is saved, neither by command nor by the automatic pick-up of "mera naam ... hai". What is already saved is still used,
+  and deleting still works. (Audit: "Private mode: koi memory write nahi".)
+- **What the model gets** (`MemoryBook.promptFacts`): at most 6 facts: name and city always, then the ones that share words with the message, then
+  the newest. Before 4A it was every fact (up to 12). Expired 24 hour items and deleted items are never in it. **Only the offline Gemma gets them by
+  default.** The Gemini switch is off; when on, Gemini gets the same few facts in its system prompt (they leave the phone then).
+- **Storage**: one SharedPreferences value, JSON encrypted with the Keystore key of `SecureStore` (AES-256-GCM), not in backups (`allowBackup=false`).
+  The old "kind|text" facts are moved over once, with unknown age, and the old value is emptied. Limit 40 items; when full the oldest automatic one goes first.
+- **Delete is verified** (audit exit "memory delete verified"): after every delete the stored value is read back from disk (not the cache) and the
+  prompt is built again with the deleted words as the question; neither may contain them. KPI > "Phase 4A checklist" shows "[naapa] Memory delete
+  verified: N delete, 0 fail". "Sab bhool jao" checks that the stored list is empty.
+- The eval (Phase 3C) now leaves memory out of its prompts, so your saved facts cannot change its score.
+
+## Deliberate gaps and limits (read before testing)
+
+- **Deleting a memory does not delete the chat.** The old message "mera naam Rahul hai" stays in that chat and the model (Gemma or Gemini) can still read it
+  there. The screen says so. For a clean start: delete the chat or begin a new one.
+- **Secrets written as words pass**: "mera pin char aath do ek" is not caught. The word list is a safety net, not a guarantee; that is why everything
+  stored is visible and deletable on the screen. Words like "password manager" are refused too (false alarm, on purpose).
+- **Automatic pick-up is the same three patterns as before** (name, city, "mujhe X pasand hai"). Nothing new is guessed.
+- **Edit changes the words, not the kind**: an edited name is still the item that "mera naam ... hai" replaces later.
+- **If the Keystore key is lost** (app data restored on another phone) the list reads as empty; nothing crashes. If the Keystore refuses to encrypt, the
+  list is stored as plain JSON (value starts with "p:") rather than lost.
+- **Not built from the audit's memory section**: `last_used_at` / provenance and age in the prompt, a "sensitivity" column, "consent_state", top-3 to 5
+  (we use 6), embeddings, "sensitive items only when the user asks" (no such items exist, they are refused), the Activity log's 30 to 90 day retention
+  (still the existing limit), a "did you mean the other Rahul" question. The audit's table is richer than this; this is the part that decides what is
+  stored and lets the user see and remove it.
+- **No spoken confirmation of "private mode"** beyond the reply text; no widget or tile for it.
+- **A number of 6 to 11 digits is always "Abhi ke liye"**, also a bill number or a year-month code. Say "hamesha" to keep it.
+
+## Phone check (about 8 minutes, Gemma, no internet needed)
+
+1. Chat: "mera naam Rahul hai" -> then Settings > Memory (yaad): "The user's name is Rahul." under Hamesha, "tumhari baat se pakda".
+2. Chat: "yaad rakho ki mera number 98765 43210 hai" -> reply says 24 ghante and reads the digits. The item is under "Abhi ke liye".
+3. Chat: "hamesha yaad rakho ki mera number 98765 43210 hai" -> now under Hamesha.
+4. Chat: "yaad rakho ki mera otp 482913 hai" -> refused. Same for "mera password hunter2".
+5. Memory screen: tap the name > Badlo > "The user's name is Rahul Sharma." > Save. Then ask in a new chat "mera naam kya hai" -> "Rahul Sharma".
+6. Tap the name > Hatao. Toast says deleted. New chat: "mera naam kya hai" -> the model must not know it (in the old chat it may, that is the chat history). KPI screen > Phase 4A checklist -> "[naapa]".
+7. Chat: "pichhle 10 minute bhool jao" -> the items saved in the last 10 minutes go, the old ones stay.
+8. Private mode: switch on (or chat "private mode on"), say "mera naam Amit hai" and "yaad rakho ki kal chhutti hai" -> nothing saved. Switch off.
+9. Memory screen > Export -> share sheet with the list as text. Then Sab bhool jao -> screen is empty; KPI shows "delete jaanch pass".
+10. Search box: type part of a saved word -> list narrows.
+
+
+---
+
+# Phase 4B: Persona + proactive suggestions (audit Sec 9.7, 9.8, 9.10) — honest status
+
+**Same situation as every part before: not compiled, not run on a phone.** No Kotlin compiler, no Android SDK here. Done instead: brackets /
+strings balance in all Kotlin files; every new symbol and drawable checked to exist; the verb-conversion rule (`Persona.fit`), the
+serious-message words and the daily budget (14 days, every 5 minutes, random candidates: never more than 1 / 2 a day) were re-implemented in
+Python and run on the inputs the new tests use (all as asserted). **The new JVM tests (`PersonaTest`, `ProactiveTest`) have not been run.**
+Run `./gradlew assembleDebug testDebugUnitTest` and send the compiler output if anything fails. Phase 0 (compile gate) is still the most
+important open item.
+
+## What it does
+
+- **Settings > Assistant style**: Tone (Friendly / Professional / Calm / Playful), Humor (Off / Light / Frequent), Aap ya tum, Bolne ka lehja
+  (Auto / Female / Male), Apne aap suggestions (Off / Low / Normal), Band ki hui suggestions. "Reply length" stays where it was (Voice and AI).
+- **Persona in the prompts** (`Persona.block`): the defaults (Friendly, Light, aap, Auto) add **nothing**, so existing users get exactly the old
+  prompts and the small model's context is unchanged. A non-default choice adds one line "Style: ..." (about 100 to 250 characters).
+- **Serious messages**: ambulance, emergency, chakkar, dard, khoon, accident, hospital, maut, suicide, police, aag, saans ... in the user's message
+  add "This message is serious: no jokes, calm and caring tone." whatever the humor setting is, and also when the user has a system prompt of their own
+  (audit: "serious / safety = auto 0").
+- **Bolne ka lehja = Female** (`Persona.fit`): the app's own sentences ("Soch raha hoon", "Theek hai, abhi karta hoon", "Sun raha hoon", the plan and
+  phone-action replies) get feminine first-person verbs (rahi / karti / sakti hoon, karungi). Only a closed list of verbs before "hoon" and words ending
+  "-unga" change; names ("Main Asha hoon") and object-agreeing past ("kar diya") do not. The default prompt's example sentence is converted too.
+  The model is told the form in the prompt; **what a model writes is not edited**, so a small model can still slip.
+- **Suggestion card** (Home, above the chat): one suggestion at a time, from real data, offline:
+  battery 20 % or less and not charging (action: battery saver settings); torch switched on by the assistant more than 10 minutes ago and
+  physically still on (a `TorchCallback` reports the real state; action: the Undo of that log entry).
+  Buttons: the action, "Baad mein", "Ye mat bolo" (that kind never comes back until switched on in Settings > Band ki hui suggestions).
+- **Rules** (`Proactive.pick`, tested): Low = 1 a day, Normal = 2, hard maximum 2; none from 22:00 to 08:00 (phone's local time); at least 3 hours
+  between two cards; the same kind at most every 6 hours; a card counts when it is shown, not when it is used. KPI shows the counts and why a card
+  was held back; "Phase 4B checklist" turns red if a day ever shows more than 2.
+
+## Deliberate gaps and limits (read before testing)
+
+- **No notifications, no background work.** The audit says "notification-first"; this app has no WorkManager and no notification channel for it, and
+  adding both is a separate piece of work. The card appears only while the app is open, a moment (0.7 s) after Home comes to the front.
+- **Two triggers only.** The audit also lists calendar events, a reminder that is due, location and a notification digest. Calendar and location need
+  permissions the app does not ask for; "reminder due" needs the app's own reminder store (alarms and timers go to the Clock app, which does not
+  tell us when they ring). Not built.
+- **"Not during a call / media / meeting"** is not checked: the card is only shown inside the app, which the user is looking at.
+- **Quiet hours are fixed** (22:00 to 08:00), not a setting. The proactive default is Low (as the audit's settings table says), so after the update a
+  user can see one card a day if the battery is low; they can switch it off or mute a kind.
+- **The torch card can be missed**: the torch state is known from the moment the app registered the callback (first Home visit of the process). A torch that
+  the user turned off by hand disappears from the card at the next Home visit; one that was never switched on through the assistant never appears.
+- **The audit's weekly summary of muted categories** is replaced by the row "Band ki hui suggestions" in Settings.
+- **Gender: Female / Male does not change the voice** (the TTS voice is chosen separately in Voice and AI); it changes the words. Hindi nouns /
+  adjectives that agree with the speaker ("main thaka hua hoon") are not handled, only the verbs listed.
+- **Humor Frequent / Playful on the 1.5B-class model** may do little: it is one instruction in a small prompt.
+- **The eval (Phase 3C) ignores persona and memory** (`personal = false`), so settings cannot change its score.
+
+## Phone check (about 8 minutes)
+
+1. Settings > Assistant style > Bolne ka lehja > Female. Chat: "torch on karo" -> reply unchanged ("Torch on kar di."). Ask "tum kya kar sakte ho?" with Gemma: the
+   answer should use "sakti hoon". While thinking, the note says "Soch rahi hoon".
+2. Same screen: Tone > Professional, Humor > Off, Aap ya tum > tum. Ask a normal question: shorter, formal, "tum".
+3. Humor > Frequent, then type "mujhe chakkar aa raha hai": no joke, calm answer.
+4. Set the defaults again (Friendly, Light, aap, Auto): answers go back to normal.
+5. Suggestions: leave on Low. Torch: chat "torch on karo", wait 10+ minutes, open Home (or leave and return): the card says "Torch 10 minute se on hai. Band kar dun?"; "Band karo" switches it off.
+6. Battery: with the phone at 20 % or less and unplugged, Home shows the battery card; "Battery saver kholo" opens the settings. Plug the charger in and return: the card is gone.
+7. "Ye mat bolo" on the torch card, repeat step 5: no card. Settings > Band ki hui suggestions shows "Torch on reh gayi"; untick it > Save.
+8. Settings > Apne aap suggestions > Off: no card at all. KPI screen > "Suggestions (Phase 4B)" shows the counts and "[naapa] Din mein 2 se zyada suggestion kabhi nahi".

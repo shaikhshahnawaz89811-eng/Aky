@@ -20,8 +20,8 @@ object ToolSpecs {
 
     private fun spec(
         name: String, desc: String, tier: String, params: List<ToolParam>,
-        readOnly: Boolean = false, idempotent: Boolean = false
-    ): ToolSpec = ToolSpec(name, desc, tier, params + AFTER, readOnly, idempotent)
+        readOnly: Boolean = false, idempotent: Boolean = false, slow: Boolean = false
+    ): ToolSpec = ToolSpec(name, desc, tier, params + AFTER, readOnly, idempotent, slow)
 
     val all: List<ToolSpec> = listOf(
         spec("time_now", "Current time.", "T0", emptyList(), readOnly = true, idempotent = true),
@@ -52,6 +52,11 @@ object ToolSpecs {
         spec(
             "call_dial", "Open the dialer with a number. The user presses Call.", "T2",
             listOf(ToolParam("number", "string", "Digits only, optional leading +"))
+        ),
+        spec(
+            "weather_now", "Current weather of a city.", "T0",
+            listOf(ToolParam("city", "string", "City name, e.g. Mumbai")),
+            readOnly = true, idempotent = true, slow = true
         )
     )
 
@@ -133,9 +138,15 @@ object ToolSpecs {
                 val n = task.args["name"].orEmpty().trim()
                 if (n.length !in 2..40) "app name must be 2 to 40 characters" else null
             }
+            "weather_now" -> {
+                if (!cityRegex.matches(task.args["city"].orEmpty().trim())) "city must be 2 to 40 letters" else null
+            }
             else -> null
         }
     }
+
+    /** Phase 3B-2: a city name is letters (any script), spaces, dot, apostrophe, hyphen; 2 to 40 characters. */
+    private val cityRegex = Regex("^\\p{L}[\\p{L}\\p{M} .'\\-]{1,39}$")
 
     /** First problem in a whole plan (also enforces the task limit), or null when every task is fine. */
     fun check(tasks: List<PlanTask>): String? {
@@ -145,7 +156,34 @@ object ToolSpecs {
             val problem = validate(t)
             if (problem != null) return problem
         }
-        return TaskGraph.validate(tasks)
+        val graph = TaskGraph.validate(tasks)
+        if (graph != null) return graph
+        return slowWaitsForConfirm(tasks)
+    }
+
+    /**
+     * Phase 3B-2: a slow (network) step may not wait, directly or through other steps, for a step that needs the user's
+     * tap. The tap arrives on the main thread, where a network call must never run; so such a plan goes back to the
+     * brain once for repair and then to a short question, never to a half-run plan.
+     */
+    fun slowWaitsForConfirm(tasks: List<PlanTask>): String? {
+        val byId = HashMap<String, PlanTask>()
+        for (t in tasks) byId[t.id] = t
+        for (t in tasks) {
+            if (find(t.tool)?.slow != true) continue
+            val seen = HashSet<String>()
+            val stack = ArrayList<String>(t.dependsOn)
+            while (stack.isNotEmpty()) {
+                val id = stack.removeAt(stack.size - 1)
+                if (!seen.add(id)) continue
+                val d = byId[id] ?: continue
+                if (find(d.tool)?.tier == "T2") {
+                    return "task " + t.id + " (" + t.tool + ") is slow and cannot wait for a step that needs confirmation"
+                }
+                stack.addAll(d.dependsOn)
+            }
+        }
+        return null
     }
 
     // ---------- Qwen2.5 tool prompt (the format its chat template was trained on) ----------

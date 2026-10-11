@@ -23,6 +23,7 @@ import com.codeassist.ai.settings.SettingsFragment
 import com.codeassist.ai.service.HandsFree
 import com.codeassist.ai.service.HealthCheck
 import com.codeassist.ai.settings.BatteryDialogs
+import com.codeassist.ai.settings.MemoryFragment
 import com.codeassist.ai.settings.VoiceAiFragment
 import com.codeassist.ai.voice.WakeCoordinator
 import com.codeassist.ai.workspace.WorkspaceActivity
@@ -210,6 +211,17 @@ class MainActivity : AppCompatActivity() {
             .setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
             .replace(R.id.fragmentContainer, VoiceAiFragment())
             .addToBackStack("voiceai")
+            .commit()
+    }
+
+    /** Memory (yaad) screen, stacked like Voice and AI so Back returns to Settings. */
+    fun openMemory() {
+        drawer.closeDrawer(GravityCompat.START)
+        if (supportFragmentManager.findFragmentById(R.id.fragmentContainer) is MemoryFragment) return
+        supportFragmentManager.beginTransaction()
+            .setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
+            .replace(R.id.fragmentContainer, MemoryFragment())
+            .addToBackStack("memory")
             .commit()
     }
 

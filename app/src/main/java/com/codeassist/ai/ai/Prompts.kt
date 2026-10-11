@@ -19,7 +19,7 @@ object Prompts {
     /** Added to the system prompt of both brains when tools are offered (audit Sec 9.3 rules). */
     const val TOOL_RULES =
         "Phone actions: call a tool only when the user clearly asks for that action now (alarm, timer, torch, " +
-            "battery, time, date, open an app, dial a number). For every other message answer normally and call " +
+            "battery, time, date, open an app, dial a number, weather of a named city). For every other message answer normally and call " +
             "no tool. Never invent a phone number or an app name. If something needed is missing, ask ONE short " +
             "question instead of guessing. The app shows the tool results to the user, so do not describe them. " +
             "Calls are numbered t1, t2 ... in the order you write them. Only when one call must wait for another " +
@@ -46,6 +46,7 @@ object Prompts {
         "Examples: \"kal subah 6 baje utha dena\" -> alarm_set {hour 6, minute 0, tomorrow true}. " +
             "\"10 minute baad yaad dilana\" -> timer_set {seconds 600}. " +
             "\"torch jalao\" -> torch_set {on true}. \"battery kitni hai\" -> battery_level. " +
+            "\"Pune ka mausam batao\" -> weather_now {city Pune}. " +
             "\"pehle torch on karo phir 5 minute ka timer\" -> torch_set {on true}, timer_set {seconds 300, after t1}."
 
     /** Used for the one retry after a rejected reply: as little text as possible for the model to trip over. */
@@ -56,8 +57,21 @@ object Prompts {
     /** A greeting needs a greeting back, not 384 tokens: bounds the damage if the model does not stop. */
     const val SMALL_TALK_TOKENS = 90
 
-    fun system(viaVoice: Boolean): String {
+    /**
+     * [userText] is the message being answered: it picks the few memory facts that fit and tells whether the message is serious
+     * (no jokes). The cloud brain only gets the memory facts when the user switched on "Gemini ko bhi yaad bhejo" in Settings > Memory
+     * (off by default). [personal] = false leaves memory and persona out (the eval must not depend on the user's settings).
+     */
+    fun system(viaVoice: Boolean, userText: String = "", personal: Boolean = true): String {
         val sb = StringBuilder(Store.systemPrompt.trim())
+        if (personal && Store.memoryToCloud) {
+            val facts = MemoryStore.promptBlock(userText)
+            if (facts.isNotEmpty()) sb.append("\n").append(facts)
+        }
+        if (personal) {
+            val persona = Persona.block(Store.persona(), userText, includeStyle = !Store.systemPromptIsCustom)
+            if (persona.isNotEmpty()) sb.append("\n").append(persona)
+        }
         when (Store.replyLength) {
             "Short" -> sb.append("\nKeep every answer very short.")
             "Long" -> sb.append("\nGive detailed, step-by-step answers when that helps.")
@@ -66,10 +80,17 @@ object Prompts {
         return sb.toString()
     }
 
-    fun systemLocal(viaVoice: Boolean): String {
-        val sb = StringBuilder(if (Store.systemPromptIsCustom) Store.systemPrompt.trim() else LOCAL_SYSTEM)
-        val facts = LocalMemory.block(Store.userFacts)
+    fun systemLocal(viaVoice: Boolean, userText: String = "", personal: Boolean = true): String {
+        val custom = Store.systemPromptIsCustom
+        val base = if (custom) Store.systemPrompt.trim() else LOCAL_SYSTEM
+        // the example sentence of the default prompt is masculine; for the Female voice it is turned feminine
+        val sb = StringBuilder(if (personal && !custom) Persona.fit(base, Store.personaGender) else base)
+        val facts = if (personal) MemoryStore.promptBlock(userText) else ""
         if (facts.isNotEmpty()) sb.append("\n").append(facts)
+        if (personal) {
+            val persona = Persona.block(Store.persona(), userText, includeStyle = !custom)
+            if (persona.isNotEmpty()) sb.append("\n").append(persona)
+        }
         when (Store.replyLength) {
             "Short" -> sb.append("\nKeep every answer very short.")
             "Long" -> sb.append("\nGive detailed, step-by-step answers when that helps.")

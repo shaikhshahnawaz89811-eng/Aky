@@ -648,10 +648,44 @@ class HomeFragment : Fragment() {
         super.onResume()
         composer?.refreshAppearance()
         refreshBrainLabels()
+        // Phase 4B: a moment later, so the torch state has been reported before the suggestion is decided
+        view?.postDelayed({ if (isAdded && view != null) refreshSuggestion() }, 700L)
         // hands-free: the wake phrase was heard while this screen was away or the app was closed
         WakeCoordinator.listener = wakeListener
         val pendingWake = WakeCoordinator.takePending()
         if (pendingWake != null) view?.post { handleWake(pendingWake) }
+    }
+
+    /** The suggestion card (Phase 4B): shows what [ProactiveRunner] decided, or hides itself. */
+    private fun refreshSuggestion() {
+        val v = view ?: return
+        val card = v.findViewById<View>(R.id.suggestionCard)
+        val ctx = requireContext().applicationContext
+        val c = com.codeassist.ai.ai.ProactiveRunner.refresh(ctx)
+        if (c == null) {
+            card.visibility = View.GONE
+            return
+        }
+        val gender = Store.personaGender
+        v.findViewById<TextView>(R.id.suggestionText).text = com.codeassist.ai.ai.Persona.fit(c.text, gender)
+        val action = v.findViewById<TextView>(R.id.suggestionAction)
+        action.visibility = if (c.actionLabel == null) View.GONE else View.VISIBLE
+        action.text = c.actionLabel.orEmpty()
+        action.setOnClickListener {
+            val msg = com.codeassist.ai.ai.ProactiveRunner.act(ctx)
+            card.visibility = View.GONE
+            if (msg.isNotEmpty()) Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+        }
+        v.findViewById<View>(R.id.suggestionLater).setOnClickListener {
+            com.codeassist.ai.ai.ProactiveRunner.dismiss(ctx)
+            card.visibility = View.GONE
+        }
+        v.findViewById<View>(R.id.suggestionMute).setOnClickListener {
+            com.codeassist.ai.ai.ProactiveRunner.mute(ctx)
+            card.visibility = View.GONE
+            Toast.makeText(ctx, "Ab ye suggestion nahi aayegi. Settings mein dobara chalu kar sakte ho.", Toast.LENGTH_LONG).show()
+        }
+        card.visibility = View.VISIBLE
     }
 
     override fun onPause() {

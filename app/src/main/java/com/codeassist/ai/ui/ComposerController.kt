@@ -325,7 +325,7 @@ class ComposerController(
                 color = MicButtonView.BLUE; label = ""; hint = ""
             }
         }
-        voiceStatus.text = label
+        voiceStatus.text = com.codeassist.ai.ai.Persona.fit(label, Store.personaGender)
         voiceStatus.setTextColor(color)
         voiceHint.text = hint
         voiceWave.barColor = color

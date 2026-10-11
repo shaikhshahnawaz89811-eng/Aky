@@ -180,3 +180,63 @@ are part 3B (see BUILD_NOTES.md for what is in which part).
 - **Debug** (Settings > Activity and debug > **Debug: task engine**): every stored plan with the state of each step, Copy, and a
   **Kill-test** button that writes a half-done plan and closes the app so the recovery can be checked on the phone.
 - **KPIs** (Debug: conversation KPIs): a "Task engine (Phase 3)" block and a "Phase 3 exit checklist".
+
+## Phase 3, part 3B-1: corrections (audit PDF Sec 13, Phase 3)
+
+Right after an alarm or timer, the user can fix it in a few words, without the brain and without a new alarm piling up:
+
+- **Change**: "nahi, 9 baje shaam", "8 baje nahi, 9 baje kar do", "nahi kal subah 7 baje" (alarm); "nahi 10 minute", "galat, 2 ghante" (timer).
+- **Cancel**: "rehne do", "wo alarm hata do", "cancel karo" (same as tapping Undo).
+- Only a reply from the last 30 minutes that made exactly one alarm or one timer can be corrected. Anything else goes on as before.
+- Alarm: the new one is set first, the old one is dismissed by its own label only if that worked (never both lost). Same time as before: nothing is done.
+- The reply always says the Clock app should be checked once: some Clock apps ignore the dismiss request.
+- Code: `Correction` (pure grammar, `CorrectionTest`), `CorrectionRunner` (phone side), hook in `ChatRunner.quickReply`, KPI block "Corrections (Phase 3B)".
+- Roadmap for the rest: `PLAN.md`.
+
+## Phase 3, part 3B-2: weather, progress, time limit, Stop (audit PDF Sec 9.6, 9.7)
+
+- **`weather_now(city)`** (Open-Meteo, no API key, T0, read-only): "Mumbai ka mausam batao". It is the first SLOW tool: it runs on a
+  worker thread under a hard **8 second** limit (`StepTimeout`), after every quick step that is ready (the timer is set at once, the
+  weather is waited for). If it does not answer, only that step fails; the rest of the plan runs ("mausam batao aur timer lagao").
+  The sentence is built from numbers and a cleaned place name only; nothing the server sends goes back to a model.
+- **Progress line** (`PlanProgress`): while a slow step runs, the "thinking" note under the reply says "Kaam 2/3 chal raha hai: Mausam";
+  after 4 s one more line says the answer is late (audit rules: at most 2 lines per step, 6 s apart; quick steps get no filler).
+  On screen only, not spoken.
+- **Stop** ends a running plan (`TaskGraph.stop`, the first use of the INTERRUPT class): every step that has not finished is cancelled,
+  an answer that comes in later is dropped, finished steps stay (an alarm already set stays set, its Undo chip stays), and the reply says
+  "Theek hai, ruk gaya." plus what happened.
+- A slow step cannot wait for a step that needs the Haan tap (`ToolSpecs.check` refuses such a plan once, then Gemma gets its repair retry).
+  After a crash a network step is never resumed: it is cancelled with "dobara bolo".
+
+## Phase 3, part 3C: measure and edit (audit PDF Sec 12, Appendix A #2, #19, #20)
+
+- **Eval** (Settings > Activity and debug > **Debug: eval (30 Hinglish cases)**): `assets/eval_multi.json` has 30 labelled cases (17
+  independent multi-step, 9 "pehle ... phir" with `after`, 4 where the right answer is one question and no tool). The chosen brain
+  (Gemini or Gemma) is asked each one with the same prompts as the chat; only the plan is judged (`EvalCases.judge`), **no tool runs**.
+  The result is kept and shown in the KPI screen under "Phase 3 exit checklist" (target 85 %).
+- **Plan edit** (`PlanEdit`, `PlanEditRunner`): right after a plan reply, "torch wala kaam hata do", "call wala kaam cancel karo",
+  "doosra timer hata do". A step that has not run is cancelled and the steps that waited for it are skipped; a step that already ran
+  is taken back through its Undo; a name that is not a step of the plan ("petrol wala kaam hata do") gets an honest answer listing what
+  the plan has. Two steps of the same tool are never guessed: it asks for "pehla" or "doosra".
+- **Plans clear** (same Settings group): removes every stored plan.
+- Roadmap for what is left: `PLAN.md`.
+
+## Phase 4, part 4A: Memory Manager (audit PDF Sec 9.5)
+
+- **Settings > AI service > Memory (yaad)**: everything the assistant remembers, in two groups ("Hamesha ke liye", "Abhi ke liye, 24 ghante"),
+  with search, edit, delete one, delete the last 5 / 30 / 60 minutes or 24 hours, delete all, text export and Private mode.
+- Chat commands: "yaad rakho ki ...", "tum mere baare mein kya jaante ho", "bhool jao", "pichhle 10 minute bhool jao", "private mode on / off".
+- A phone-like number is kept for 24 hours and read back; say "hamesha yaad rakho ki ..." to keep it. OTP, password, PIN, card, Aadhaar / PAN, bank
+  account and API keys are never saved.
+- Stored encrypted (Keystore), not in backups. Every delete is verified by reading the stored value back and rebuilding the prompt.
+- Only the offline Gemma gets the (at most 6) relevant facts; "Gemini ko bhi yaad bhejo" is an opt-in switch, off by default.
+- Details, limits and the phone check: `BUILD_NOTES.md` (end of file). What comes next: `PLAN.md`.
+
+## Phase 4, part 4B: persona and suggestions (audit PDF Sec 9.7, 9.8, 9.10)
+
+- **Settings > Assistant style**: Tone, Humor, Aap ya tum, Bolne ka lehja (Female = "karti hoon", Male = "karta hoon", Auto = as before), Apne aap suggestions.
+  The defaults change nothing in any prompt. Serious messages (emergency, pain, accident) never get jokes.
+- **Suggestion card on Home** (only while the app is open, works offline): battery 20 % or less and not charging, or a torch the assistant switched on
+  more than 10 minutes ago and that is still on. At most 1 (Low) or 2 (Normal) a day, never more than 2, not between 22:00 and 08:00, 3 hours apart,
+  "Ye mat bolo" mutes a kind (switch it on again in Settings).
+- No notifications and no calendar / location triggers yet. Details, limits and the phone check: `BUILD_NOTES.md` (end of file). What comes next: `PLAN.md`.

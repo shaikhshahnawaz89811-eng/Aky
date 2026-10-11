@@ -31,6 +31,20 @@ object ConvKpi {
     @Synchronized
     fun get(key: String): Long = prefs?.getLong(key, 0L) ?: 0L
 
+    /** Phase 3C: a value that is set, not added to (the last eval result). */
+    @Synchronized
+    fun put(key: String, value: Long) {
+        prefs?.edit()?.putLong(key, value)?.apply()
+    }
+
+    @Synchronized
+    fun putText(key: String, value: String) {
+        prefs?.edit()?.putString(key, value)?.apply()
+    }
+
+    @Synchronized
+    fun getText(key: String): String = prefs?.getString(key, "") ?: ""
+
     /** End of the user's turn to the first spoken sample. [fast] = answered by the Tier-0 fast path. */
     @Synchronized
     fun recordFirstAudio(ms: Long, fast: Boolean) {
@@ -213,6 +227,69 @@ object ConvKpi {
         sb.append("  kill-process test: ").append(get("resume_test_pass")).append(" pass · ").append(get("resume_test_fail"))
             .append(" fail · ").append(get("resume_test_late")).append(" der se khola (2 minute ke baad, ginti nahi)\n")
 
+        sb.append("\nCorrections (Phase 3B)\n")
+        sb.append("  \"nahi, 9 baje\" jaise sudhar: ").append(get("correction_runs")).append(" mile · ")
+            .append(get("correction_ok")).append(" purana hata diya · ")
+            .append(get("correction_old_stays")).append(" purana khud hatana pada · ")
+            .append(get("correction_failed")).append(" naya set nahi hua\n")
+
+        sb.append("\nProgress, Stop, mausam (Phase 3B-2)\n")
+        sb.append("  plans jisme mausam tha: ").append(get("plan_with_slow")).append(" · 8 s timeout: ").append(get("step_timeouts"))
+            .append(" · der ki line (progress): ").append(get("progress_nudges"))
+            .append(" · Stop ke baad aaya jawab pheka: ").append(get("plan_late_dropped")).append("\n")
+        sb.append("  Stop (INTERRUPT): ").append(get("interrupt_stop")).append(" baar · ").append(get("interrupt_nodes_cancelled"))
+            .append(" kaam cancel hue · recovery mein network kaam chhode: ").append(get("plan_slow_dropped")).append("\n")
+
+        sb.append("\nPlan edit aur eval (Phase 3C)\n")
+        sb.append("  \"X wala kaam hata do\": ").append(get("plan_edit_runs")).append(" mile · ").append(get("plan_edit_removed"))
+            .append(" cancel hue · ").append(get("plan_edit_undone")).append(" wapas kiye · ").append(get("plan_edit_notfound"))
+            .append(" \"aisa kaam nahi\" · ").append(get("plan_edit_ambiguous")).append(" \"kaun sa?\" · plans clear kiye: ")
+            .append(get("plans_cleared")).append("\n")
+        val evalTotal = get("eval_total")
+        if (evalTotal > 0) {
+            val ok = get("eval_ok")
+            sb.append("  eval: ").append(ok).append("/").append(evalTotal).append(" sahi (").append(getText("eval_engine")).append(")\n")
+        } else {
+            sb.append("  eval: abhi poora set nahi chala (Settings > Debug: task engine > Eval chalao)\n")
+        }
+
+        sb.append("\nMemory (Phase 4A)\n")
+        sb.append("  yaad rakhi: ").append(get("mem_added_auto")).append(" apne aap pakdi · ").append(get("mem_said"))
+            .append(" tumne kaha · ").append(get("mem_working")).append(" sirf 24 ghante ke liye\n")
+        sb.append("  mana kiya (OTP / PIN / card ...): ").append(get("mem_blocked")).append(" · Private mode ne roka: ")
+            .append(get("mem_private_blocked")).append(" · Private on / off: ").append(get("mem_private_on")).append(" / ")
+            .append(get("mem_private_off")).append("\n")
+        sb.append("  Memory screen: ").append(get("mem_deleted")).append(" ek-ek delete · ").append(get("mem_edited")).append(" badli · ")
+            .append(get("mem_promoted")).append(" hamesha ki gayi · ").append(get("mem_export")).append(" export\n")
+        sb.append("  sab bhoola: ").append(get("mem_forget_all")).append(" · pichhle minute bhoole: ").append(get("mem_forget_recent"))
+            .append(" · delete jaanch pass / fail: ").append(get("mem_delete_ok")).append(" / ").append(get("mem_delete_fail")).append("\n")
+
+        sb.append("\nSuggestions (Phase 4B)\n")
+        sb.append("  dikhin: ").append(get("proactive_shown")).append(" (battery ").append(get("proactive_kind_battery"))
+            .append(", torch ").append(get("proactive_kind_torch")).append(") · kaam kiya: ").append(get("proactive_acted"))
+            .append(" · baad mein: ").append(get("proactive_dismissed")).append(" · ye mat bolo: ").append(get("proactive_muted")).append("\n")
+        sb.append("  roki gayin: budget ").append(get("proactive_blocked_budget")).append(" · raat ").append(get("proactive_blocked_quiet"))
+            .append(" · 3 ghante ka gap ").append(get("proactive_blocked_gap")).append(" · wahi kism 6 ghante ").append(get("proactive_blocked_cooldown"))
+            .append(" · band kism ").append(get("proactive_blocked_muted")).append(" · Off ").append(get("proactive_blocked_off")).append("\n")
+
+        sb.append("\nPhase 4A checklist\n")
+        val delOk = get("mem_delete_ok")
+        val delFail = get("mem_delete_fail")
+        sb.append(
+            if (delFail > 0) "  [FAIL] Memory delete verified: $delFail delete ke baad bhi baat disk ya prompt mein mili\n"
+            else if (delOk > 0) "  [naapa] Memory delete verified: $delOk delete, 0 fail (disk se wapas padh kar aur prompt dobara bana kar jaancha)\n"
+            else "  [baaki] Memory delete verified: Settings > Memory se ek yaad hatao\n"
+        )
+
+        sb.append("\nPhase 4B checklist\n")
+        val over = get("proactive_over_budget")
+        val shown = get("proactive_shown")
+        sb.append(
+            if (over > 0) "  [FAIL] Din mein 2 se zyada suggestion: $over baar\n"
+            else if (shown > 0) "  [naapa] Din mein 2 se zyada suggestion kabhi nahi: $shown dikhin, 0 over budget\n"
+            else "  [baaki] Suggestion abhi tak dikhi nahi (battery 20% se kam ho ya torch 10 minute on rahe, Home khula ho)\n"
+        )
+
         sb.append("\nPhase 2 exit checklist\n")
         val listenHours = get("wake_listen_ms") / 3_600_000.0
         sb.append(check(trials >= 20, "Wake false reject naapa", "kam se kam 20 try chahiye (Wake test), abhi $trials")).append("\n")
@@ -232,7 +309,16 @@ object ConvKpi {
             if (get("resume_test_fail") > 0) "  [FAIL] Kill-process resume test fail hua: Debug: task engine ka plan text mujhe bhejo\n"
             else check(get("resume_test_pass") >= 1, "Kill-process resume test", "Settings > Debug: task engine > Test chalao") + "\n"
         )
-        sb.append("  [baaki] Multi-intent >= 85%: labelled Hinglish multi-intent set chahiye (Appendix A #2, #19, #20), app ise khud nahi naap sakti\n")
+        if (evalTotal >= EvalCases.EXIT_MIN_CASES) {
+            val ok = get("eval_ok")
+            val pct = Math.round(ok * 100.0 / evalTotal).toInt()
+            sb.append(
+                if (ok * 100 >= EvalCases.EXIT_PERCENT * evalTotal) "  [naapa] Multi-intent >= 85%: $ok/$evalTotal = $pct% (${getText("eval_engine")})\n"
+                else "  [baaki] Multi-intent >= 85%: abhi $ok/$evalTotal = $pct%. Eval ka \"Galat cases\" text mujhe bhejo, wahi theek karunga\n"
+            )
+        } else {
+            sb.append("  [baaki] Multi-intent >= 85%: Debug: task engine > Eval chalao (30 cases, sirf parser, koi tool nahi chalta)\n")
+        }
         return sb.toString().trimEnd()
     }
 }

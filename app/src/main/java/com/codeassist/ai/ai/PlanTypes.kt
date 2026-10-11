@@ -21,7 +21,13 @@ class ToolSpec(
      * After a process crash in the middle of a plan, only such a tool is run again; a tool that is not
      * idempotent (a second timer, a second alarm) is reported as "not sure if it happened" instead.
      */
-    val idempotent: Boolean = false
+    val idempotent: Boolean = false,
+    /**
+     * Phase 3B-2: the tool talks to the network and can take seconds (weather). It runs off the main thread with a
+     * hard time limit ([TaskGraph.STEP_TIMEOUT_MS]), after every quick step that is ready, and it can never wait for a
+     * step that needs the user's tap ([ToolSpecs.check]).
+     */
+    val slow: Boolean = false
 )
 
 /**

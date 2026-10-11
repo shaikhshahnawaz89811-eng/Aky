@@ -19,15 +19,35 @@ import com.codeassist.ai.R
 import com.codeassist.ai.ai.ActivityLog
 import com.codeassist.ai.ai.BrainStatus
 import com.codeassist.ai.ai.ConvKpi
+import com.codeassist.ai.ai.EvalRunner
+import com.codeassist.ai.ai.MemoryStore
+import com.codeassist.ai.ai.Persona
+import com.codeassist.ai.ai.Proactive
+import com.codeassist.ai.ai.ProactiveRunner
 import com.codeassist.ai.ai.TaskEngine
 import com.codeassist.ai.ai.TaskGraph
 import com.codeassist.ai.ai.TaskQueue
 import com.codeassist.ai.ai.Trace
 import com.codeassist.ai.data.Store
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class SettingsFragment : Fragment() {
 
     private lateinit var container: LinearLayout
+
+    // Phase 3C: the eval run (30 cases) lives in this scope and ends with the screen
+    private val evalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var evalJob: Job? = null
+
+    override fun onDestroyView() {
+        evalJob?.cancel()
+        super.onDestroyView()
+    }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         return inflater.inflate(R.layout.fragment_settings, container, false)
@@ -66,9 +86,39 @@ class SettingsFragment : Fragment() {
             valueRow(R.drawable.ic_sparkle, "Voice and AI", BrainStatus.chipLabel()) { _, _ ->
                 (activity as? com.codeassist.ai.MainActivity)?.openVoiceAi()
             }
+            valueRow(R.drawable.ic_database, "Memory (yaad)", memorySummary()) { _, _ ->
+                (activity as? com.codeassist.ai.MainActivity)?.openMemory()
+            }
             noteRow(
                 "Gemma 4 E2B phone par hi chalta hai. Internet sirf tab use hota hai jab aap Gemini " +
                     "chunte ho ya Gemma 4 model download karte ho."
+            )
+        }
+
+        section("Assistant style")
+        card {
+            valueRow(R.drawable.ic_palette, "Tone", Store.personaTone) { a, tv ->
+                popup(a, Persona.TONES, Store.personaTone) { Store.personaTone = it; tv.text = it }
+            }
+            valueRow(R.drawable.ic_sparkle, "Humor", Store.personaHumor) { a, tv ->
+                popup(a, Persona.HUMORS, Store.personaHumor) { Store.personaHumor = it; tv.text = it }
+            }
+            valueRow(R.drawable.ic_chat, "Aap ya tum", Store.personaAddress) { a, tv ->
+                popup(a, Persona.ADDRESS, Store.personaAddress) { Store.personaAddress = it; tv.text = it }
+            }
+            valueRow(R.drawable.ic_mic, "Bolne ka lehja", Store.personaGender) { a, tv ->
+                popup(a, Persona.GENDERS, Store.personaGender) { Store.personaGender = it; tv.text = it }
+            }
+            valueRow(R.drawable.ic_bell, "Apne aap suggestions", Store.proactiveLevel) { a, tv ->
+                popup(a, Proactive.LEVELS, Store.proactiveLevel) { Store.proactiveLevel = it; tv.text = it }
+            }
+            valueRow(R.drawable.ic_history, "Band ki hui suggestions", mutedSummary()) { _, _ -> showMutedKinds() }
+            noteRow(
+                "Bolne ka lehja: Female = \"karti hoon\", Male = \"karta hoon\", Auto = jaisa abhi hai. Ye app ke apne likhe " +
+                    "jawab aur status par lagta hai; model ko bhi bata diya jata hai. Serious baat (emergency, dard, accident) par " +
+                    "mazaak hamesha band rehta hai. Suggestions: Low = din mein 1, Normal = din mein 2, kabhi isse zyada nahi, " +
+                    "raat 10 se subah 8 tak nahi. Sirf app khula ho tab Home par ek card dikhta hai: battery 20% se kam, ya " +
+                    "assistant ki jalayi torch 10 minute se zyada on."
             )
         }
 
@@ -102,6 +152,12 @@ class SettingsFragment : Fragment() {
             }
             valueRow(R.drawable.ic_chart, "Debug: task engine", taskPlanCount()) { _, _ ->
                 showTaskEngine()
+            }
+            valueRow(R.drawable.ic_chart, "Debug: eval (30 Hinglish cases)", evalSummary()) { _, _ ->
+                confirmEval()
+            }
+            actionRow(R.drawable.ic_delete, "Plans clear") {
+                confirmClearPlans()
             }
             noteRow(
                 "Activity log mein har phone action (torch, alarm, timer, call, app) dikhta hai. " +
@@ -171,6 +227,115 @@ class SettingsFragment : Fragment() {
     private fun taskPlanCount(): String {
         TaskQueue.init(requireContext())
         return TaskQueue.count().toString() + " plans"
+    }
+
+    private fun mutedSummary(): String {
+        val muted = ProactiveRunner.mutedKinds(requireContext())
+        return if (muted.isEmpty()) "koi nahi" else muted.joinToString(", ") { Proactive.kindLabel(it) }
+    }
+
+    /** Lets the user switch a muted kind of suggestion on again. */
+    private fun showMutedKinds() {
+        val ctx = requireContext()
+        val kinds = Proactive.KINDS
+        val muted = ProactiveRunner.mutedKinds(ctx)
+        val checked = BooleanArray(kinds.size) { kinds[it] in muted }
+        AlertDialog.Builder(ctx)
+            .setTitle("Ye suggestions band hain")
+            .setMultiChoiceItems(kinds.map { Proactive.kindLabel(it) }.toTypedArray(), checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("Save") { _, _ ->
+                ProactiveRunner.setMuted(ctx, kinds.filterIndexed { i, _ -> checked[i] })
+                if (isAdded) build()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun memorySummary(): String {
+        MemoryStore.init(requireContext())
+        val n = MemoryStore.all().size
+        return (if (Store.memoryPrivate) "Private · " else "") + n + " yaad"
+    }
+
+    private fun evalSummary(): String {
+        ConvKpi.init(requireContext())
+        val total = ConvKpi.get("eval_total")
+        return if (total > 0) ConvKpi.get("eval_ok").toString() + "/" + total else "chala nahi"
+    }
+
+    private fun confirmEval() {
+        val brain = if (Store.brainProvider == "gemini") "Gemini" else "Gemma 4 (phone par)"
+        AlertDialog.Builder(requireContext())
+            .setTitle("Eval chalao")
+            .setMessage(
+                "30 Hinglish cases brain ($brain) ko diye jayenge aur uska plan jaancha jayega. Koi tool nahi chalega: " +
+                    "alarm set nahi hoga, call nahi lagegi. Gemini mein ek minute ke aas-paas, Gemma mein kai minute lagte hain. Chalao?"
+            )
+            .setPositiveButton("Chalao") { _, _ -> runEval() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runEval() {
+        val app = requireContext().applicationContext
+        var stopRequested = false
+        val dlg = AlertDialog.Builder(requireContext())
+            .setTitle("Eval chal raha hai")
+            .setMessage("Shuru ho raha hai...")
+            .setCancelable(false)
+            .setNegativeButton("Roko") { _, _ -> stopRequested = true }
+            .create()
+        dlg.show()
+        evalJob?.cancel()
+        evalJob = evalScope.launch {
+            try {
+                val report = EvalRunner.run(
+                    app,
+                    { done, total, id -> dlg.setMessage("Case " + (done + 1) + "/" + total + " (" + id + ")\n\nKoi tool nahi chalta, sirf parser jaanch.") },
+                    { stopRequested }
+                )
+                dlg.dismiss()
+                showEvalResult(report.text())
+            } catch (e: CancellationException) {
+                dlg.dismiss()
+                throw e
+            } catch (e: Throwable) {
+                dlg.dismiss()
+                Toast.makeText(app, e.message ?: "Eval nahi chal paya", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showEvalResult(text: String) {
+        val ctx = context ?: return
+        AlertDialog.Builder(ctx)
+            .setTitle("Eval natija")
+            .setMessage(text)
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("CodeAssist eval", text))
+                Toast.makeText(ctx, "Copy ho gaya", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close") { _, _ -> if (isAdded) build() }
+            .show()
+    }
+
+    private fun confirmClearPlans() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("Plans clear")
+            .setMessage(
+                "Phone mein rakhe saare plans hata dun? Jo plan Haan / Nahi ka wait kar raha hai wo bhi jayega: " +
+                    "uska Haan dabane par \"plan mila nahi\" aayega aur kuch nahi chalega. Chat ke messages nahi hatenge."
+            )
+            .setPositiveButton("Hatao") { _, _ ->
+                val n = TaskEngine.clearPlans(requireContext().applicationContext)
+                Toast.makeText(requireContext(), "$n plans hata diye", Toast.LENGTH_SHORT).show()
+                build()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     /** Phase 3: the stored plans with the state of every node, and the kill-process resume test. */

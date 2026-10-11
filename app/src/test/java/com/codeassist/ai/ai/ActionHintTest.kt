@@ -19,6 +19,12 @@ class ActionHintTest {
         assertTrue(ActionHint.looksLikeAction("10 minute baad yaad dilana"))
     }
 
+    @Test fun weatherRequestsMatch() {
+        assertTrue(ActionHint.looksLikeAction("Mumbai ka mausam batao"))
+        assertTrue(ActionHint.looksLikeAction("what is the weather in Pune"))
+        assertTrue(ActionHint.looksLikeAction("kal barish hogi kya"))
+    }
+
     @Test fun ordinaryChatDoesNotMatch() {
         assertFalse(ActionHint.looksLikeAction("Kotlin coroutines kya hote hain?"))
         assertFalse(ActionHint.looksLikeAction("mujhe ek kahani sunao"))

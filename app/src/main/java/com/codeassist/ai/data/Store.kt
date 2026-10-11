@@ -101,12 +101,62 @@ object Store {
         set(v) = prefs.edit().putBoolean("local_screenshot_ocr", v).apply()
 
     /**
-     * Short list of facts the user stated about themselves ("kind|text" lines, see LocalMemory). Kept on the phone,
-     * shown to the offline model at the top of every prompt. "bhool jao" in the chat clears it.
+     * OLD list of facts ("kind|text" lines). Since Phase 4A it is only read once, by [com.codeassist.ai.ai.MemoryStore], to move
+     * the facts into the encrypted memory list, and is then emptied. Nothing else should use it.
      */
     var userFacts: List<String>
         get() = com.codeassist.ai.ai.LocalMemory.unpack(prefs.getString("user_facts", null))
         set(v) = prefs.edit().putString("user_facts", com.codeassist.ai.ai.LocalMemory.pack(v)).apply()
+
+    /**
+     * Phase 4A: the encrypted memory list ([com.codeassist.ai.ai.MemoryStore] reads and writes it). Null = not created yet, then the
+     * old [userFacts] lines are moved into it once.
+     */
+    var memoryBlob: String?
+        get() = prefs.getString("memory_items_v2", null)
+        set(v) = prefs.edit().putString("memory_items_v2", v).apply()
+
+    /** Phase 4A: Private mode. While on, nothing new is saved to memory (what is already saved is still used). */
+    var memoryPrivate: Boolean
+        get() = prefs.getBoolean("memory_private", false)
+        set(v) = prefs.edit().putBoolean("memory_private", v).apply()
+
+    /** Phase 4A: also give Gemini (cloud) the few relevant facts. Off by default: memory stays on the phone. */
+    var memoryToCloud: Boolean
+        get() = prefs.getBoolean("memory_to_cloud", false)
+        set(v) = prefs.edit().putBoolean("memory_to_cloud", v).apply()
+
+    // ---------- Phase 4B: persona and proactive suggestions ----------
+
+    var personaTone: String
+        get() = prefs.getString("persona_tone", com.codeassist.ai.ai.Persona.DEFAULT_TONE) ?: com.codeassist.ai.ai.Persona.DEFAULT_TONE
+        set(v) = prefs.edit().putString("persona_tone", v).apply()
+
+    var personaHumor: String
+        get() = prefs.getString("persona_humor", com.codeassist.ai.ai.Persona.DEFAULT_HUMOR) ?: com.codeassist.ai.ai.Persona.DEFAULT_HUMOR
+        set(v) = prefs.edit().putString("persona_humor", v).apply()
+
+    /** "aap" | "tum" */
+    var personaAddress: String
+        get() = prefs.getString("persona_address", com.codeassist.ai.ai.Persona.DEFAULT_ADDRESS) ?: com.codeassist.ai.ai.Persona.DEFAULT_ADDRESS
+        set(v) = prefs.edit().putString("persona_address", v).apply()
+
+    /** "Auto" | "Female" | "Male": the grammatical gender of the assistant's own verbs (karti / karta hoon). */
+    var personaGender: String
+        get() = prefs.getString("persona_gender", com.codeassist.ai.ai.Persona.DEFAULT_GENDER) ?: com.codeassist.ai.ai.Persona.DEFAULT_GENDER
+        set(v) = prefs.edit().putString("persona_gender", v).apply()
+
+    fun persona(): com.codeassist.ai.ai.Persona.Spec =
+        com.codeassist.ai.ai.Persona.Spec(personaTone, personaHumor, personaAddress, personaGender)
+
+    /** "Off" | "Low" (1 a day) | "Normal" (2 a day). In-app card only; see [com.codeassist.ai.ai.Proactive]. */
+    var proactiveLevel: String
+        get() = prefs.getString("proactive_level", "Low") ?: "Low"
+        set(v) = prefs.edit().putString("proactive_level", v).apply()
+
+    var proactiveState: String?
+        get() = prefs.getString("proactive_state", null)
+        set(v) = prefs.edit().putString("proactive_state", v).apply()
 
     /** Context window (tokens) of the on-device model. Qwen2.5 1.5B keeps its cache small, so 4096 is the default. */
     var localContext: Int

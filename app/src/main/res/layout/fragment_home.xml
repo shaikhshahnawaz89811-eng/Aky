@@ -75,6 +75,66 @@
             android:visibility="gone" />
     </LinearLayout>
 
+    <!-- Phase 4B: one suggestion at a time, from real phone data (battery, torch). Hidden unless there is one. -->
+    <LinearLayout
+        android:id="@+id/suggestionCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="14dp"
+        android:layout_marginEnd="14dp"
+        android:layout_marginBottom="6dp"
+        android:orientation="vertical"
+        android:padding="14dp"
+        android:background="@drawable/glass_card"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/suggestionText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/text1"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal"
+            android:gravity="end">
+
+            <TextView
+                android:id="@+id/suggestionMute"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:padding="8dp"
+                android:text="Ye mat bolo"
+                android:textColor="@color/text3"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/suggestionLater"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:padding="8dp"
+                android:text="Baad mein"
+                android:textColor="@color/text2"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/suggestionAction"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:padding="8dp"
+                android:text="Karo"
+                android:textColor="@color/accent"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
     <!-- Body: greeting <-> messages -->
     <FrameLayout
         android:layout_width="match_parent"

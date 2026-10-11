@@ -27,13 +27,18 @@ object PlanExecutor {
     private val gson = Gson()
 
     /**
-     * Runs a checked plan. [chatId] and [messageId] say where its reply will live, so a plan that a crash interrupted
-     * can still report to the right chat after the restart ([TaskEngine.recover]). Both may be empty.
+     * Runs a checked plan (suspends while a slow step waits for the network). [chatId] and [messageId] say where its reply
+     * will live, so a plan that a crash interrupted can still report to the right chat after the restart
+     * ([TaskEngine.recover]). Both may be empty. [monitor] gets the plan id and the progress lines.
      */
-    fun run(
+    suspend fun run(
         ctx: Context, ack: String, tasks: List<PlanTask>,
-        chatId: String = "", messageId: String = ""
-    ): Outcome = TaskEngine.run(ctx.applicationContext, chatId, messageId, ack, tasks)
+        chatId: String = "", messageId: String = "",
+        monitor: TaskEngine.Monitor? = null
+    ): Outcome = TaskEngine.run(ctx.applicationContext, chatId, messageId, ack, tasks, monitor)
+
+    /** The user pressed Stop on a running plan (Phase 3B-2). Null when the plan is gone. */
+    fun stop(ctx: Context, planId: String): Outcome? = TaskEngine.stop(ctx.applicationContext, planId)
 
     /**
      * The user tapped Haan ([yes] true) or Nahi on a pending T2 action. Updates the stored message and returns it

@@ -23,7 +23,19 @@ object ToolRunner {
             )
             "app_open" -> Tier0.runOpenApp(ctx, a["name"].orEmpty())
             "call_dial" -> Tier0.runDial(ctx, ToolSpecs.cleanNumber(a["number"].orEmpty()))
+            // slow tool: the task engine calls it through StepTimeout; a direct call (old paths) still works, it just blocks
+            "weather_now" -> weather(a["city"].orEmpty().trim())
             else -> Tier0.Result("Tool", "Ye action mujhe aati nahi.", ok = false)
         }
     }
+
+    /** Blocking network call: only the task engine runs it, off the main thread and under [StepTimeout]. */
+    fun weather(city: String): Tier0.Result =
+        when (val ans = WeatherClient.lookup(city)) {
+            is WeatherClient.Answer.Ok -> Tier0.Result("Mausam", ans.reply)
+            is WeatherClient.Answer.NotFound ->
+                Tier0.Result("Mausam", "\"" + ans.city + "\" naam ka shehar nahi mila. Spelling ek baar check karke bolo.", ok = false)
+            is WeatherClient.Answer.Failed ->
+                Tier0.Result("Mausam", "Mausam nahi bata paya: " + ans.reason + ".", ok = false)
+        }
 }

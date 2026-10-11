@@ -12,6 +12,7 @@ object ActionHint {
         "time", "samay", "baje", "bje", "kitne", "date", "tarikh", "tareekh", "call", "dial",
         "open", "kholo", "khol", "launch", "laga", "lagao",
         "bhaje", "uthna", "uthana", "uthao", "utha", "jagana", "jagao", "wake", "remind", "reminder", "dilana", "dila",
+        "mausam", "weather", "temperature", "barish", "मौसम",
         "अलार्म", "टाइमर", "टॉर्च", "बैटरी", "बजे", "कितने", "समय", "तारीख", "कॉल", "खोलो", "खोल"
     )
 
