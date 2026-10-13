@@ -58,6 +58,12 @@ object HinglishGuide {
         return score(ws) >= maxOf(1, ws.size / 30)
     }
 
+    /** (Hindi-only marker words, all words) of [text]. T2: [ReplyGuard.languageMismatch] judges a reply of the Gemma brain with it. */
+    fun hindiShare(text: String): Pair<Int, Int> {
+        val ws = words(text)
+        return Pair(score(ws), ws.size)
+    }
+
     /** Two short exchanges that show the tone and the script. Placed before the real history. */
     fun fewShot(): List<Message> = listOf(
         Message(role = Role.USER, text = "kaise ho? kya kar rahe ho"),

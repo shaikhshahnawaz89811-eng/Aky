@@ -212,6 +212,22 @@ class VoiceAiFragment : Fragment() {
                 "Sirf timeout, network, rate-limit ya server failure par is turn ke liye installed Gemma chalta hai. " +
                     "Aapka selected brain Gemini hi rahega; agli turn par Gemini phir try hoga."
             )
+            switchRow(R.drawable.ic_sparkle, "Bhaari plan sawaal Gemini ko", Store.heavyPlanToGemini) {
+                Store.heavyPlanToGemini = it
+            }
+            noteRow(
+                "Phone brain chuna ho aur Gemini key saved ho, tab plan / roadmap / prompt likhne jaise bhaari sawaal is turn ke liye " +
+                    "Gemini ko jaate hain (sawaal internet par Google ko jaata hai). Gemini na mile to Gemma jawab deta hai. " +
+                    "Band karo to sab kuch phone par rahega."
+            )
+            switchRow(R.drawable.ic_sparkle, "Plan builder (phone par, section-wise)", Store.planBuilder) {
+                Store.planBuilder = it
+            }
+            noteRow(
+                "Phone brain par \"ek prompt do, poora plan, dusra AI coding kar de\" jaisi maang par app khud 5 phase wala plan banati hai: " +
+                    "chat me jo tumne kaha wo plan me seedha likha jaata hai, har hissa alag Gemma call me banta hai aur jaancha jaata hai. " +
+                    "Kuch minute lagte hain aur sab phone par rehta hai (Gemini is raste me nahi). Band karo to Gemma ek hi baar me likhega."
+            )
             switchRow(R.drawable.ic_image, "Gemma ke liye attached-image OCR", Store.localScreenshotOcr) {
                 Store.localScreenshotOcr = it
             }

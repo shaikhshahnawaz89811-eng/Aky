@@ -36,7 +36,9 @@ data class Message(
     /** Short chip text when the brain ran phone tools in this reply (for example "Alarm · Torch"). */
     val actions: String? = null,
     /** JSON of a PendingAction: a T2 tool waiting for the user's "Haan" tap. Null once answered. */
-    val pending: String? = null
+    val pending: String? = null,
+    /** T4: JSON of a drawing ([com.codeassist.ai.ai.Sketch.toJson]) shown under the text; null for every other reply. */
+    val sketch: String? = null
 )
 
 data class ChatMeta(

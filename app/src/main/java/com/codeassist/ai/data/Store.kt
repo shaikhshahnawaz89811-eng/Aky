@@ -93,6 +93,22 @@ object Store {
         set(v) = prefs.edit().putBoolean("automatic_fallback", v).apply()
 
     /**
+     * T2: a heavy plan / roadmap / prompt-writing question goes to Gemini even when the phone brain is chosen (a saved Gemini key
+     * is needed). On by default; the question then leaves the phone, so Settings > Voice and AI has a switch for it.
+     */
+    var heavyPlanToGemini: Boolean
+        get() = prefs.getBoolean("heavy_plan_to_gemini", true)
+        set(v) = prefs.edit().putBoolean("heavy_plan_to_gemini", v).apply()
+
+    /**
+     * T3: a request to write a full plan / prompt for a software project is answered by the plan builder (phone brain only):
+     * fixed headings and 5 phases, one small Gemma call per box, every box checked. On by default; off = Gemma writes it in one go.
+     */
+    var planBuilder: Boolean
+        get() = prefs.getBoolean("plan_builder", true)
+        set(v) = prefs.edit().putBoolean("plan_builder", v).apply()
+
+    /**
      * On-device photo reading for Qwen: text (OCR) and rough object labels go into the prompt as plain text.
      * On by default now (offline fix part 2); without it the offline model could not use a photo at all.
      */

@@ -93,8 +93,19 @@ object MemoryCommands {
                 else Result("Theek hai, maine sab bhula diya (" + items.size + " yaad).", emptyList(), null, "forget_all")
             is LocalMemory.Cmd.Show -> show(items, now)
             is LocalMemory.Cmd.Incomplete -> Result(LocalMemory.INCOMPLETE_REPLY, null, null, "incomplete")
+            is LocalMemory.Cmd.AskName -> askName(items, now)
             is LocalMemory.Cmd.Remember -> remember(c.note, items, now, privateMode, forceAlways)
         }
+    }
+
+    /**
+     * "mera naam kya hai" / "kya tum mera naam jante ho": the stored name is read out, or the user is asked. The model is never
+     * asked, so it cannot say "haan, jaanta hoon" without knowing (test chat 13 Oct 2026). A wrong old save ("Jante") is ignored.
+     */
+    private fun askName(items: List<MemoryItem>, now: Long): Result {
+        val live = MemoryBook.alive(items, now)
+        val name = LocalMemory.findName(live.map { it.kind to it.text })
+        return Result(LocalMemory.nameReply(name), null, null, if (name == null) "ask_name_unknown" else "ask_name")
     }
 
     private fun show(items: List<MemoryItem>, now: Long): Result {

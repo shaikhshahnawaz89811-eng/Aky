@@ -121,7 +121,11 @@ object MemoryBook {
      * items that share words with [userText], then the newest, up to [PROMPT_MAX] in all. A deleted or expired item is never here.
      */
     fun promptFacts(items: List<MemoryItem>, userText: String, now: Long): List<MemoryItem> {
-        val live = alive(items, now)
+        // a name saved by the old rule from "mera naam jante hoo" ("Jante") is never told to the model
+        // the language choice has its own line in the system prompt ([Prompts.languageLine]); it is not a "fact" to use when relevant
+        val live = alive(items, now).filterNot {
+            (it.kind == "name" && LocalMemory.isWrongName(it.text)) || it.kind == LocalMemory.KIND_REPLY_LANGUAGE
+        }
         val core = live.filter { it.kind in coreKinds }.sortedByDescending { it.createdAt }
         val asked = words(userText)
         val rest = live.filter { it.kind !in coreKinds }.sortedWith(
@@ -129,6 +133,12 @@ object MemoryBook {
                 .thenByDescending { it.createdAt }
         )
         return (core + rest).take(PROMPT_MAX)
+    }
+
+    /** T2: the user's language choice ("Hinglish me batao"): [LocalMemory.LANG_HINGLISH], [LocalMemory.LANG_ENGLISH] or null. */
+    fun replyLanguage(items: List<MemoryItem>, now: Long): String? {
+        val item = alive(items, now).filter { it.kind == LocalMemory.KIND_REPLY_LANGUAGE }.maxByOrNull { it.createdAt } ?: return null
+        return LocalMemory.languageOfFact(item.text)
     }
 
     fun promptBlock(items: List<MemoryItem>, userText: String, now: Long): String {

@@ -40,6 +40,21 @@ Audit ke Phase 4 me ek cheez abhi kisi part me nahi hai: **references aur topic 
 | 5B | Cost meter (Gemini tokens, mahine ka andaza) + debug overlay | `GeminiClient`, `ConvKpi`, `DebugOverlay` | Meter asli token count se milta hai |
 | 5C | Release safai: R8 / proguard, lint, permissions ki list, battery test, signed release ke steps | `proguard-rules.pro`, `app/build.gradle`, docs | Release APK khulta hai, sab features chalte hain |
 
+## Test-chat phases (13 Oct 2026 ki report, 4 hisse; har hisse ke baad zip)
+
+Report: `CodeAssistAI_Test_Chat_Report.pdf`. Galti ke number report ke hain.
+
+| Phase | Kaam | Mukhya files | Pass hone ka test |
+|---|---|---|---|
+| **T1 (ho gaya)** | Galti 1: naam galat yaad. Galti 2: "WhatsApp on karo" par inkaar (phrase, ActionHint, inkaar par retry) | `LocalMemory`, `MemoryCommands`, `MemoryBook`, `OpenPhrase`, `Tier0`, `ActionHint`, `ToolRefusal`, `ChatRunner` | "mera naam jante ho" naam save nahi karta; "WhatsApp on karo" WhatsApp kholta hai |
+| **T2 (ho gaya)** | Galti 3 aur 5: Hinglish ki jagah English (ReplyGuard mismatch + retry, "reply_language" yaad), system prompt me asli stack (Gemma 4 E2B / LiteRT-LM), bhaari plan sawaal Gemini ko, README ka Qwen2.5 wala hissa | `ReplyGuard`, `LocalMemory`, `Prompts`, `FallbackPolicy`, `README.md` | "Hinglish me batao" ke baad 3 jawab Roman Hinglish; "tum kis model par chalte ho" sahi |
+| **T3 (ho gaya)** | Galti 4: plan / prompt builder: faislon ki list, fixed template (Goal, Stack, Screens, Phases, Pass shartein), section-wise call, completeness check ("as discussed" reject, saare phase maujood) | naya module + `ChatRunner` | Bhasha badal kar dobara maango: phase ginti same, "as discussed" kahin nahi |
+| **T4 (ho gaya)** | Galti 6: sketch (JSON: flowchart / wireframe / shapes + Canvas). Tool-prompt ka budget nahi chhua: sketch ka apna raasta, `ToolSpecs` me tool nahi (BUILD_NOTES me wajah) | `Sketch`, `SketchView`, `ChatRunner`, `MessagesAdapter` | "ek sketch banao: ghar" par drawing ya ek saaf sawaal |
+
+T2 me jaan-boojh kar chhoda (BUILD_NOTES me poori list): "tum kis model par chalte ho" ka jawab sirf prompt se aata hai (app khud nahi deta); Gemini raste me bhasha retry nahi; Qwen ke bache hue switch (OCR, Qwen options) abhi screen par hain; offline modules aur Gemini client ka review abhi nahi kiya.
+
+**T3 / T4 sirf phone brain (Gemma) ke liye hain.** Gemini ka raasta (heavy-plan hand-over samet) abhi phone par test nahi hua; builder aur sketch Gemini ko nahi chhute. Test-chat ke chaaron phase ke baad bhi **Phase 0 (compile gate) khula hai**: kuch bhi compile nahi hua.
+
 ## Dhyan rakhne ki baatein
 - 8 GB RAM wale phone par local model dheela hai: har naya tool prompt me jodta hai. 3A me prompt +250 token gaya tha; 3B-2 me `weather_now` se block 2,994 se 3,319 characters hua (limit 3,400). Ab jagah khatam hai: agla tool lagane se pehle chhote model ka prompt dobara tay karna hoga.
 - T3 (paisa, band na hone wala kaam) kabhi app se nahi. Ye rule kisi phase me dheela nahi hoga.

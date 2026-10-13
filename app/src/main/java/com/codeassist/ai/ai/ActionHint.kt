@@ -24,13 +24,46 @@ object ActionHint {
 
     private val splitter = Regex("[^\\p{L}\\p{M}\\p{N}]+")
 
-    fun looksLikeAction(text: String): Boolean {
+    /**
+     * "on" / "chalu" alone say nothing ("based on ..."), so they count only in the shape "<app> on karo" and only when the words
+     * before them name an app (test chat 13 Oct 2026: "WhatsApp on karo" got no tools and the model said it could not open apps).
+     */
+    private val switchWords = setOf("on", "chalu", "चालू")
+    private val tailWords = setOf("karo", "kar", "do", "de", "dena", "kardo", "please", "pls", "na", "yaar", "ji")
+    private val fillers = setOf(
+        "ko", "app", "mera", "mere", "meri", "phone", "me", "mein", "ek", "zara", "jara", "bhai", "yaar", "the", "a", "please", "pls"
+    )
+
+    /** Apps people name often: used as well as the installed list, so "<app> on karo" still reaches the tools (and gets an honest "nahi mila"). */
+    private val wellKnownApps = setOf(
+        "whatsapp", "youtube", "instagram", "facebook", "telegram", "gmail", "chrome", "maps", "spotify", "camera",
+        "gallery", "snapchat", "netflix", "twitter", "paytm", "phonepe", "gpay", "zoom", "meet", "calculator", "clock"
+    )
+
+    /**
+     * [apps] gives the normalized labels of the installed apps; it is only called when the message has the "<app> on karo"
+     * shape, so ordinary chat never pays for the app list.
+     */
+    fun looksLikeAction(text: String, apps: () -> Collection<String> = { emptyList() }): Boolean {
         val t = text.trim()
         if (t.isEmpty() || t.length > 160 || t.contains('\n')) return false
         if (t.any { it == '`' || it == '{' || it == '}' || it == ';' || it == '=' || it == '<' || it == '>' }) return false
         val tokens = t.lowercase().split(splitter).filter { it.isNotEmpty() }
         if (tokens.size > 25) return false
         if (tokens.any { it in codeWords }) return false
-        return tokens.any { it in actionWords }
+        if (tokens.any { it in actionWords }) return true
+        return switchedAppOn(tokens, apps)
+    }
+
+    private fun switchedAppOn(tokens: List<String>, apps: () -> Collection<String>): Boolean {
+        val i = tokens.indexOfLast { it in switchWords }
+        if (i <= 0) return false
+        if (tokens.subList(i + 1, tokens.size).any { it !in tailWords }) return false
+        val head = tokens.subList(0, i).filter { it !in fillers }
+        if (head.isEmpty() || head.size > 3) return false
+        val joined = " " + head.joinToString(" ") + " "
+        if (wellKnownApps.any { joined.contains(" $it ") }) return true
+        val labels = apps().map { it.lowercase().trim() }.filter { it.isNotEmpty() }
+        return labels.any { a -> joined.contains(" $a ") || head.any { w -> w.length >= 4 && a.startsWith(w) } }
     }
 }

@@ -1,7 +1,7 @@
 # CodeAssistAI Android client
 
 Native Android client built with Kotlin and XML views. Chats, projects and settings are stored
-on the device. AI replies are real: pick the on-device Qwen2.5 1.5B model or a Gemini API key in
+on the device. AI replies are real: pick the on-device Gemma 4 E2B model (Google LiteRT-LM) or a Gemini API key in
 **Settings > Voice and AI**. If neither is set up, the app says so in the chat instead of faking a reply.
 
 ## Included
@@ -9,10 +9,11 @@ on the device. AI replies are real: pick the on-device Qwen2.5 1.5B model or a G
 - Home chat and searchable chat history with saved drafts; rename, pin, move, export, delete.
 - Edit, copy, share, select, delete, and **Regenerate** (last reply) message actions; image previews zoom.
 - Local projects with instructions and workspace files; a project chat gets its first reply on open.
-- Image, ZIP, and file attachments. Text/source files are sent to either brain, images to Gemini only (Qwen2.5 1.5B is text-only).
-- **Brain**: Qwen2.5-1.5B-Instruct Q4_K_M (~986 MB, Apache-2.0, llama.cpp through `dev.ffmpegkit-maintained:llama-android`)
-  or Gemini over HTTPS (streamed replies, model list read from the API). Qwen replaces the old Phi-4 mini module.
-- **Qwen2.5 module card**: Download (Android DownloadManager) or Import file, GGUF header check (`qwen2` only),
+- Image, ZIP, and file attachments. Text/source files and pictures go to either brain (Gemma 4 E2B takes pictures directly).
+- **Brain**: Gemma 4 E2B (~2.6 GB, Apache-2.0, `litert-community/gemma-4-E2B-it-litert-lm`, file `gemma-4-E2B-it.litertlm`)
+  running offline on Google's LiteRT-LM runtime (GPU first, CPU if the GPU does not start), or Gemini over HTTPS
+  (streamed replies, model list read from the API). Gemma replaced Qwen2.5 1.5B (llama.cpp), which had replaced Phi-4 mini.
+- **Gemma module card**: Download (Android DownloadManager) or Import file (`.litertlm` file-name check),
   Load / Unload / Delete with the rules enforced in code (no Delete while loaded, no second Load). If the old
   Phi-4 file is still on the phone, Options offers to delete it (2.49 GB back).
 - **Gemini key card**: key stored encrypted with an Android Keystore AES-GCM key, Test key, model picker.
@@ -77,32 +78,36 @@ on the device. AI replies are real: pick the on-device Qwen2.5 1.5B model or a G
 - **KPI report** (Settings > Activity and debug > Debug: conversation KPIs) now ends with a **Phase 2 exit checklist** that says
   which numbers are measured and what is still missing (for example "8 ghante sunna chahiye, abhi 1.5").
 
-## Qwen part B1: tool calls behind a policy gate (audit PDF Sec 9.3, 9.6, 11)
+## Part B1: tool calls behind a policy gate (audit PDF Sec 9.3, 9.6, 11)
 
-- **One plan format, two brains**: Gemini uses function calling, Qwen2.5 writes `<tool_call>` text that the app parses (`PlanParser`).
+- **One plan format, two brains**: Gemini uses function calling, Gemma 4 writes `<tool_call>` text that the app parses (`PlanParser`).
   A broken call gets one repair retry, then a short question: never a guess.
 - **8 tools** (time, date, battery, torch, timer, alarm, open app, dial) reuse the Tier-0 code, so they do exactly what the fast path does.
 - **Policy gate** (`PolicyGate`): T0 runs, T1 runs with Undo, T2 (dial) waits for a **Haan** tap under the reply; nothing else runs.
 - **One merged reply** per turn (`ReplyComposer`); one Undo chip undoes every action of that reply; every action is in the activity log.
-- Attachments never get tools. Qwen gets tools only for short messages that mention a phone action (`ActionHint`); Gemini always.
-- Automatic Gemini -> Qwen fallback and optional local screenshot OCR are in **B2**. See BUILD_NOTES.md for the honest status.
+- Attachments never get tools. Gemma gets tools only for short messages that mention a phone action (`ActionHint`); Gemini always.
+- Automatic Gemini -> Gemma fallback is in **B2**. See BUILD_NOTES.md for the honest status.
 
-## Qwen part B2: graceful cloud fallback + optional local OCR
+## Part B2: graceful cloud fallback (the screenshot-OCR half is history)
 
 - When Gemini times out, has no route / DNS, hits a rate limit, or returns a server error, the current turn
-  can use an **already installed** Qwen model. Authentication, invalid-model, malformed-request, safety, and
+  can use an **already installed** Gemma model. Authentication, invalid-model, malformed-request, safety, and
   user-cancel errors do not silently switch brains.
 - Fallback is enabled by default and can be turned off in **Settings > Voice and AI > Reliability and local reading**.
   The selected provider stays Gemini, so the next turn tries Gemini again. The reply says which level was used.
 - Gemini uses bounded connect / read timeouts for this route; if it had already streamed partial text, that text is
-  cleared before Qwen starts so two answers are not merged. B1's attachment tool block and T2 confirmation remain in force.
-- Optional **Qwen attached-image OCR** uses the bundled ML Kit Latin recognizer on the phone. It is off by default,
-  works for readable Latin / English text (including code screenshots), and only adds recognized text to the local
-  Qwen prompt. Gemini's image path is unchanged; attachments still cannot invoke phone-action tools.
-- Settings > Activity and debug > **Debug: conversation KPIs** records successful Gemini L0 turns, L1 / L2 degradation,
-  Qwen fallback outcomes, and OCR successes / failures. These are on-device counts, not message contents.
+  cleared before Gemma starts so two answers are not merged. B1's attachment tool block and T2 confirmation remain in force.
+- The **attached-image OCR** switch of this part is left over from the Qwen days. Gemma 4 reads pictures directly and nothing
+  in the code reads the switch any more, so it changes nothing (it is still shown in Settings; removing it is open).
+  Attachments still cannot invoke phone-action tools.
+- Settings > Activity and debug > **Debug: conversation KPIs** records successful Gemini L0 turns, L1 / L2 degradation
+  and Gemma fallback outcomes. These are on-device counts, not message contents.
 
-## Offline fix, part 1: Qwen answers that make sense
+## Offline fix, part 1 (history: written for Qwen2.5 1.5B)
+
+After the engine swap to Gemma 4 E2B the prompt-shape test, the ChatML template, the "Qwen options" screen and the token tricks below are
+no longer used. `ReplyGuard` is used again, but only for the language check of phase T2 (see the last section). The text is kept as
+the record of why those pieces exist.
 
 Why: in a real chat log the offline Qwen answered "Hello" with a long rambling reply, wrote foreign-script junk, looped
 ("I. I. I.") and forgot the user's name, while Gemini was fine. This part fixes what can be fixed without replacing the
@@ -132,7 +137,9 @@ llama-android library (that is part 2).
 
 ## Network and privacy
 
-- `INTERNET` is used only for Gemini and for downloading the Qwen2.5 model. Qwen2.5 inference is offline.
+- `INTERNET` is used for Gemini, the optional ElevenLabs voice, the weather tool (Open-Meteo) and for downloading models.
+  Gemma 4 inference itself is offline. With the phone brain chosen and a Gemini key saved, a heavy plan question can still go to
+  Gemini for that turn (T2); the switch is in Settings > Voice and AI and can be turned off.
 - `RECORD_AUDIO` is requested the first time the mic is used. The app never records or stores audio;
   Android's speech service handles it (offline pack optional).
 - Android app backup is disabled.
@@ -144,7 +151,7 @@ llama-android library (that is part 2).
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
-The AAR for llama.cpp ships `arm64-v8a` only, so use a 64-bit ARM phone (an x86 emulator cannot load the Qwen model).
+Use a real 64-bit ARM phone for the on-device Gemma model; an emulator was never tested.
 
 See `BUILD_NOTES.md` for what is verified and what still needs a device test.
 
@@ -240,3 +247,24 @@ Right after an alarm or timer, the user can fix it in a few words, without the b
   more than 10 minutes ago and that is still on. At most 1 (Low) or 2 (Normal) a day, never more than 2, not between 22:00 and 08:00, 3 hours apart,
   "Ye mat bolo" mutes a kind (switch it on again in Settings).
 - No notifications and no calendar / location triggers yet. Details, limits and the phone check: `BUILD_NOTES.md` (end of file). What comes next: `PLAN.md`.
+
+## Test-chat fixes (13 Oct 2026): T1 and T2
+
+Source: `CodeAssistAI_Test_Chat_Report.pdf`. Limits and the phone checks are at the end of `BUILD_NOTES.md`; the rest of the plan is `PLAN.md`.
+
+- **T1**: "mera naam jante ho" no longer saves a name; "WhatsApp on karo" opens WhatsApp.
+- **T2, language**: "Hinglish me batao" (also "English me batao", "reply in Hinglish") is kept as a standing choice (memory kind
+  `reply_language`, visible and deletable in Settings > Memory) and goes into the prompt of both brains, also for messages written in English.
+  If Gemma still answers in the wrong language, the app asks once more with the rule repeated (`ReplyGuard.languageMismatch`); a retry that is
+  still wrong is dropped and the caption under the reply says so.
+- **T2, stack**: the prompt of both brains states what the brain really is (Gemma 4 E2B on LiteRT-LM, offline; or the Gemini model id),
+  so "tum kis model par chalte ho" gets the real answer.
+- **T2, heavy plans**: with the phone brain chosen and a Gemini key saved, a request to write a plan / roadmap / spec / prompt goes to Gemini
+  for that turn (switch in Settings > Voice and AI; the question then leaves the phone). If Gemini cannot be reached, Gemma answers.
+
+
+## Test chat ke baad (T3, T4)
+
+- **Plan builder (T3)**: phone brain par "ek prompt do, poora plan, dusra AI coding kar de" jaisi maang par app khud 5 phase wala plan banati hai: chat ke tumhare lines seedha plan me, har hissa alag Gemma call me, jaanch ke saath. Switch: Settings > Voice and AI. Detail BUILD_NOTES me "Phase T3".
+- **Sketch (T4)**: "sketch banao: ghar", "login ka flowchart banao", "chat screen ka wireframe banao". Model JSON likhta hai, app chitra banati hai (training nahi). Detail BUILD_NOTES me "Phase T4".
+- Dono sirf phone brain par. Compile / test abhi baaki (PLAN.md, Phase 0).

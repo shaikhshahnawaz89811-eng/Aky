@@ -1149,3 +1149,183 @@ important open item.
 6. Battery: with the phone at 20 % or less and unplugged, Home shows the battery card; "Battery saver kholo" opens the settings. Plug the charger in and return: the card is gone.
 7. "Ye mat bolo" on the torch card, repeat step 5: no card. Settings > Band ki hui suggestions shows "Torch on reh gayi"; untick it > Save.
 8. Settings > Apne aap suggestions > Off: no card at all. KPI screen > "Suggestions (Phase 4B)" shows the counts and "[naapa] Din mein 2 se zyada suggestion kabhi nahi".
+
+
+---
+
+# Test-chat fixes, Phase T1 of 4 (13 Oct 2026): naam aur "app on karo"
+
+Source: `CodeAssistAI_Test_Chat_Report.pdf` (12 aur 13 Oct ki test chat). Is phase me report ki galti 1 aur 2 (aur 2 ka suraksha-jaal) theek hui. Baaki teen phase `PLAN.md` ki "Test-chat phases" table me hain.
+
+## Kya badla
+
+| File | Badlav |
+|---|---|
+| `LocalMemory.kt` | `stopWords` me sawaal ke shabd (jante, jaante, janta, yaad, tumhe, ...): "mera naam jante hoo" ab naam nahi banata. "?" par khatam hone wala message koi fact nahi deta. Naya `Cmd.AskName`: "mera naam kya hai", "kya tum mera naam jante ho", "what is my name". `findName`, `nameReply`, `validName`, `isWrongName` helpers |
+| `MemoryCommands.kt` | `AskName`: saved naam seedha batata hai, warna "Mujhe abhi aapka naam nahi pata. Bataiye, aapka naam kya hai?". Model ko nahi puchta, kuch save nahi karta. KPI: `mem_ask_name`, `mem_ask_name_unknown` |
+| `MemoryBook.kt` | `promptFacts` purani galat save ("The user's name is Jante.") model ko nahi bhejta |
+| `OpenPhrase.kt` (naya) | App kholne wale phrase ka parser (pure Kotlin). Purane phrase jaise the; naye: "on karo / on kar do / chalu kar do / start kar do / launch kar do / on / chalu" |
+| `Tier0.kt` | `openApp` ab `OpenPhrase` use karta hai. Naye "on karo" phrase **strict** hain: sirf poora app naam ya 4+ akshar ka prefix; "contains" nahi. `wifi / bluetooth / data / hotspot` jaise settings app nahi maane jaate. Naya `installedAppNames(ctx)` |
+| `ActionHint.kt` | "<app> on karo" tab action hai jab "on / chalu" ke pehle ke shabd kisi app ka naam hon (installed list ya aam naam: whatsapp, youtube, ...) aur uske baad sirf karo / kar do / please jaise shabd hon. App list tabhi mangti hai jab message is shape ka ho |
+| `ToolRefusal.kt` (naya) + `ChatRunner.kt` | Tools band the aur model ne chhote order par "main ek AI hoon, phone par ... nahi kar sakta" kaha: ek baar tools ke saath dobara try (KPI `local_refusal_retry`). "kya tum ... khol sakte ho?", "kaise", code, wifi / bluetooth / data jaisi settings, lambe message par kabhi retry nahi |
+
+Naye / badle tests: `LocalMemoryTest`, `MemoryCommandsTest`, `ActionHintTest`, `OpenPhraseTest` (naya), `ToolRefusalTest` (naya).
+
+## Jaan-boojh kar nahi kiya
+
+- `eval_multi.json` ko nahi chhua: `EvalCasesTest` use 30 cases (17 / 9 / 4) par tikaye hue hai aur Phase 3 ka 85 % exit rule bhi 30 par. "WhatsApp on karo" jaise cases tab jodna ho to alag file me (T2 me puchhunga), warna naya number purane se mil jayega.
+- `runOpenApp` (model ka `app_open` tool call) pehle jaisa loose hai; sirf phrase wale raste strict hain.
+- Gemini raste me kuch nahi badla: use tools hamesha milte hain.
+
+## Seemayein (zaroor padho)
+
+- **Compile nahi hua.** Is sandbox me Kotlin compiler nahi hai (Phase 0 ka gate ab bhi khula hai). Naya logic (regex, ActionHint, OpenPhrase, ToolRefusal) Python me dohra kar ke test ke har expected jawab se milaya gaya; Kotlin me nahi chala. Pehle CI chalao; error aaye to lal hissa bhejo.
+- `Tier0.openByName` aur `ChatRunner` ka retry Android types par tikay hain: JVM test nahi, sirf phone check.
+- Retry ek aur generation chalata hai (kuch second). Sirf galat inkaar par hota hai.
+
+## Phone check (about 5 minute)
+
+1. Chat: "mera naam jante ho". Jawab: "Mujhe abhi aapka naam nahi pata..." (agar naam saved nahi). Settings > Memory me "Jante" nahi banna chahiye.
+2. "mera naam shahnawaz hai", phir "mera naam kya hai": "Aapka naam Shahnawaz hai." seedha, bina model ke (note me Gemma / tok/s nahi).
+3. "WhatsApp on karo": WhatsApp khulta hai (T0 "Open app"). "youtube chalu kar do": YouTube khulta hai.
+4. "wifi on karo": koi app nahi khulta, aur inkaar-retry bhi nahi chalta (settings ke liye inkaar sach hai); model ka jawab jaisa aaye.
+5. "kya tum WhatsApp khol sakte ho?": sirf jawab, WhatsApp nahi khulta.
+6. KPI screen me `mem_ask_name` badhna chahiye; `local_refusal_retry` sirf tab jab model ne galat inkaar kiya.
+
+# Test-chat fixes, Phase T2 of 4 (13 Oct 2026): bhasha, asli stack, bhaari plan sawaal
+
+Source: `CodeAssistAI_Test_Chat_Report.pdf` (galti 3 aur 5). Report is zip me nahi hai, isliye kaam `PLAN.md` ki T2 row ke hisaab se kiya gaya. T3 aur T4 abhi baaki hain.
+
+## Kya badla
+
+| File | Badlav |
+|---|---|
+| `LocalMemory.kt` | Naya `languageChoice`: "Hinglish me batao", "hinglish mein jawab do", "ab se hinglish me baat karo", "reply in Hinglish", "hinglish only" (English ke liye wahi shape). Sirf baat-cheet ke kriya (batao, bolo, jawab, baat, reply, answer, talk ...): "english me translate karo" aur "hinglish me likho" ek baar ka kaam hain, choice nahi. "?" par khatam hone wala message koi choice nahi deta. Ek message me do phrase ho to baad wala jeetta hai. `extract` ab ye choice `reply_language` fact ke roop me deta hai (same kind purana badal deta hai); `languageOfFact` Memory screen me edit kiye sentence ko bhi samajhta hai |
+| `MemoryBook.kt`, `MemoryStore.kt` | `replyLanguage()`: saved choice padhta hai. `promptFacts` is item ko "fact" ki list me nahi dikhata (iski apni line hai) |
+| `ReplyGuard.kt`, `HinglishGuide.kt` | `wantedLanguage` (saved choice pehle, phir message Hinglish ho to Hinglish, warna koi niyam nahi; message me english / angrezi / translate / anuvad ho to us turn ka koi niyam nahi: "isko English me translate karo" ka jawab English hi hona chahiye), `languageMismatch` (code, 8 se kam shabd, aur niyam-rahit message kabhi nahi jaanchte. Hinglish chaha aur jawab me Hindi shabd 1 per 30 se kam: galat. Saved Roman Hinglish par Devanagari jawab: galat script. English chaha aur jawab me Hindi shabd 15 % ya zyada: galat), `retryNote`. `HinglishGuide.hindiShare` naya. Qwen ke baad ye dono pehli baar phir kaam me aaye |
+| `Prompts.kt` | `stackLine`: "Gemma 4 E2B, phone par offline, Google LiteRT-LM" ya "Google Gemini (model ...)", offline brain ka zikr, aur "koi aur model apna mat batao". `languageLine`: saved choice ki ek line, aur ek apwaad: agar message translation ya doosri bhasha maange to wahi maano (Hinglish ke udaharan me gender badalne wala kriya nahi, kyunki Female voice sirf base prompt badalti hai). Dono sirf asli chat me, eval me nahi (`personal = false`). `DEFAULT_SYSTEM` / `LOCAL_SYSTEM` ka text nahi badla |
+| `ChatRunner.kt` | `runLocal`: Gemma ka jawab galat bhasha me ho to EK baar dobara (system me language line, user turn me `retryNote`); retry bhi galat ho to pehla jawab rahega; caption me likha aata hai. Tool turn par nahi. `start`: bhaari plan sawaal par `runHeavyPlan` (Gemini; koi bhi failure par Gemma, `automaticFallback` ka isse lena-dena nahi) |
+| `FallbackPolicy.kt` | `isHeavyPlan` (plan / roadmap / spec / prompt jaisa shabd + "banao / likho / batao" jaisa shabd + kam se kam 6 shabd, aur ya 12+ shabd ya "poora / complete / detailed / phase" jaisa shabd), `escalateHeavyPlan` (phone brain + saved Gemini key + switch on) |
+| `Store.kt`, `VoiceAiFragment.kt` | Naya switch "Bhaari plan sawaal Gemini ko" (default on), Settings > Voice and AI > Reliability and local reading |
+| `ConvKpi.kt` | Naya block "Bhasha aur bhaari sawaal (T2)": retry / theek hua / phir bhi galat, bhaari sawaal Gemini ko / Gemini nahi mila |
+| `README.md`, `PLAN.md` | README ka Qwen2.5 wala hissa Gemma 4 E2B / LiteRT-LM se badla (jo sirf itihaas hai uspar "history" likha), T1 / T2 ka naya section; PLAN me T2 "ho gaya" |
+
+Naye tests (24): `ReplyGuardTest` (+8), `LocalMemoryTest` (+6), `MemoryBookTest` (+3), `FallbackPolicyTest` (+3), `PromptsTest` (naya, 4).
+
+## Jaan-boojh kar nahi kiya
+
+- "tum kis model par chalte ho" ka jawab app khud nahi deta; sirf prompt me asli stack hai. Chhota model phir bhi galat bol sakta hai: phone check 7 dekho. Galat nikle to ek chhota Tier-0 jawab (brain ka naam seedha batane wala) agle phase me jod sakte hain.
+- Gemini raste me bhasha retry nahi (Gemini ek line se maan leta hai, aur har retry ek aur network call hota).
+- `eval_multi.json` ko nahi chhua (30 case wala 85 % rule).
+- Qwen ke bache hue switch (attached-image OCR, "Qwen options") ko nahi hataya: dono ab kuch nahi karte.
+- Offline modules (Gemma card, offline speech model) aur Gemini client ka review nahi kiya (tumne kaha abhi zaroori nahi).
+- `DEFAULT_SYSTEM` ka text nahi badla: agar kisi ne Settings me purana default text save kiya ho to wo "custom" ginta jata aur naya text use nahi hota.
+
+## Seemayein (zaroor padho)
+
+- **Compile nahi hua.** Sandbox me Kotlin compiler nahi hai (Phase 0 ka gate ab bhi khula hai). Naya logic (regex, shabd-suchi, bhasha ka niyam, bhaari plan ka niyam) Python me dohra kar ke 65 case par chalaya gaya; regex aur shabd-suchi seedha Kotlin files se padhi gayi; sab pass. 154 `.kt` files par ek mota bracket / string check bhi saaf. Kotlin me kuch nahi chala: pehle CI chalao, error aaye to lal hissa bhejo.
+- `ChatRunner` ka naya hissa Android types par tika hai: JVM test nahi, sirf phone check.
+- **Bhasha ka retry ek aur generation hai** (kuch second). Pehla English jawab streaming me dikh sakta hai aur phir badal jata hai. 8 shabd se chhota jawab ya code wala jawab jaancha nahi jata.
+- Hinglish jaanchne ki suchi me sirf Hindi shabd hain: bahut kam Hindi wala (1 per 30 shabd se kam) Hinglish jawab "English" ginta jayega aur ek retry kharch karega.
+- **Bhaari plan sawaal internet par Google ko jaata hai**, bhale phone brain chuna ho. Isliye switch hai (default on, aur sirf tab jab key saved ho). Suchi mota anuman hai: "Goa trip ka 3 din ka detailed plan banao" jaisa sawaal bhi "bhaari" ginta jata hai. T3 ka plan builder ise pakka karega.
+- Bhasha ka choice Gemini ko bhi jaata hai ("Gemini ko bhi yaad bhejo" band ho tab bhi): wo style ki pasand hai, nijee fact nahi. Private mode me ye choice save nahi hoti (us message me Hinglish likha ho to jawab phir bhi Hinglish aata hai).
+- "kya tum hinglish me baat kar sakte ho" (bina "?" ke likha) bhi choice maana jata hai. Memory screen se item hata do to wapas message ke hisaab se chalega.
+
+## Phone check (about 9 minute, Gemma brain, Gemini key saved)
+
+1. "what is a REST API?" -> English jawab (koi niyam nahi).
+2. "Hinglish me batao" -> pichhla jawab Roman Hinglish me. Settings > Memory me "The user wants all replies in Roman Hinglish..." dikhna chahiye.
+3. Teen sawaal English me: "what is recursion?", "explain binary search", "list vs set difference" -> teeno jawab Roman Hinglish. English aaye to caption me "bhasha retry +Ns" ya "bhasha retry ke baad bhi nahi badli" dikhega; KPI > "Bhasha aur bhaari sawaal (T2)" me ginti.
+4. Hinglish choice rehte hue: "isko English me translate karo: main ghar ja raha hoon, kal meeting hai" -> English anuvad (Hinglish retry nahi chalna chahiye).
+5. "English me batao" -> ab jawab English; Memory me ab bhi bhasha ka sirf ek item (purana badal gaya).
+6. Memory se wo item hata do. "kaise ho bhai" -> Hinglish jawab, "how are you" -> English jawab (message ke hisaab se).
+7. "tum kis model par chalte ho?" -> Gemma 4 E2B, phone par offline, LiteRT-LM. Brain ko Gemini karke wahi sawaal -> Google Gemini (model ka naam). Qwen / Phi / GPT nahi aana chahiye.
+8. Gemma brain par: "mere app ka poora phase wise plan banao" -> caption me "Gemini · ... · bhaari plan sawaal"; KPI me "bhaari plan sawaal Gemini ko" +1. Airplane mode me wahi sawaal -> Gemma jawab deta hai, caption me "bhaari plan sawaal: Gemini nahi mila". Switch band karke wahi sawaal -> Gemma, Gemini nahi.
+9. "kaise ho", "torch on karo", "kal subah 6 baje utha dena" par koi retry / Gemini nahi (KPI ginti na badhe).
+
+
+# Test-chat fixes, Phase T3 of 4 (14 Oct 2026): plan / prompt builder
+
+Source: `CodeAssistAI_Test_Chat_Report.pdf`, galti 4 ("Ek prompt do, poora plan, dusra AI coding kar de": Phase 4 aur 5 gayab, "UI as discussed earlier", aakhir me jhootha "covers everything"). **Sirf phone brain (Gemma) ke liye.** Gemini ka raasta nahi chhua aur uska test abhi hua nahi.
+
+## Kya badla
+
+| File | Badlav |
+|---|---|
+| `PlanBuilder.kt` (naya, pure Kotlin) | **Kaun maangta hai**: plan / prompt / blueprint jaisa shabd + "do / de / banao ..." + "poora / phase / dusra AI / coding / language" jaisa ishara + software ka sandarbh (message me ya pichhle 8 user message me kam se kam 2 software shabd). "Goa trip ka detailed plan banao", "kal ka plan batao", "plan banao" plan-request nahi. **Bhasha badal kar dobara**: pichhla jawab isi builder ka ho (caption "Plan builder ...") aur message chhota ho ("English latter rakho or Hindi bhasha me do ye") to wahi purani maang naye bhasha me dobara chalti hai. `language()`: "english latter + hindi bhasha" = Roman Hinglish. **Faisle**: chat me user ke apne lines (phone command, "ok", chhote sawaal, plan ki maang, "Hinglish me do" jaise message nikaal kar), bina badle plan me likhe jaate hain (zyada hon to pehle 3 + sabse naye, 14 line / 1800 akshar tak). **Dhaancha app ka**: Goal, Faisle, Stack, Screens aur UI, 5 phase (Setup / Model aur data / UI / Core logic aur optimization / Testing aur deployment), Kya na karna, Kaam kab poora. Har hissa alag Gemma call (8 call). **Jaanch**: khaali hissa, "as discussed / jaisa pehle bataya" jaise chat ke hawale, galat bhasha, phase me `PASS:` line na ho; ek baar dobara likhwana, phir bhi galat to plan ke aakhir me "Dhyan: ye plan adhura hai (...)". **Galat tech**: "GGUF ko TFLite me convert", "7B+ model ko small / efficient", "Code Typos" wali line plan se hata di jaati hai. **Aakhri line app likhti hai** ("Is plan me 5 phase hain"), model nahi: "covers everything" kabhi nahi aa sakta |
+| `ChatRunner.kt` | `start`: phone brain + switch on + voice nahi + attachment nahi + `PlanBuilder.source(...)` mile to `runPlanBuild` (heavy-Gemini hand-over se **pehle**, kyunki Gemini ka raasta untested hai). `prepareLocal` (model load jaanch) `runLocal` se nikaal kar dono me. Plan hissa-dar screen par badhta dikhta hai ("Plan: hissa 3 / 8"); Stop dabane par jo ban chuka wahi bachta hai |
+| `Store.kt`, `VoiceAiFragment.kt` | Naya switch "Plan builder (phone par, section-wise)", default on (Settings > Voice and AI > Reliability) |
+| `ConvKpi.kt` | Naya block "Plan builder (T3)": plan bane / poore / adhure / retry / hataayi gayi galat tech lines |
+| `FallbackPolicy.kt` | `buildWords` me "do, de, dena, dijiye" jode. T2 ka naap: report ka asli message "Ek prompt do, poora plan, dusra AI coding kar de" T2 ke niyam se "bhaari" ginta hi nahi tha (usme "do / de" "make it" shabd nahi the). Ab ginta hai (builder band ho tab Gemini ko jaata hai) |
+
+Naye tests: `PlanBuilderTest` (23). `FallbackPolicyTest` ke purane cases ke natije nahi badle (Python me dohra kar ke dekha).
+
+## Jaan-boojh kar nahi kiya
+
+- Gemini me plan builder nahi. Gemini ka raasta (T2 ka heavy-plan hand-over samet) abhi phone par test nahi hua; builder use sirf tab chalata hai jab phone brain chuna ho. Builder switch band karo to purana raasta (Gemini ya Gemma ek hi baar me) wapas.
+- Stack hissa ki bhasha jaanch nahi (usme zyada English naam hote hain).
+- Library ke naam ki asli jaanch (internet par) nahi: sirf teen jaani-hui galtiyan pakadi jaati hain. Baaki naam ke liye prompt me "verify karo" likha hai.
+- Voice se maangi plan par builder nahi (bolkar lamba plan sunna kaam ka nahi).
+- `eval_multi.json` ko nahi chhua (30 case, 85 % rule).
+
+## Seemayein (zaroor padho)
+
+- **Compile nahi hua** (sandbox me Kotlin compiler nahi; Phase 0 ka gate ab bhi khula hai). `PlanBuilderTest` JVM test hai par **chala nahi**. Python me regex / trigger / tidy / tech-check ka mirror chalaya (report ke sab cases: asli maang haan, Goa trip nahi, redo haan, "Hinglish me batao" redo nahi); Kotlin me kuch nahi chala.
+- **Samay**: 8 chhote Gemma call, har ek kuch second se zyada. Phone par poora plan kuch minute le sakta hai (retry hua to zyada). Screen par plan hissa-dar dikhta hai.
+- `PlanBuilder.build` ke andar model ka jawab `LocalLlm.chat` se aata hai; ek call ke dauran Stop turant nahi rukta (pehle jaisa).
+- Faisle "user ke apne shabd" hain: agar user ne chat me galat ya adhoori baat likhi, wo bhi waisi hi plan me jaayegi.
+- Plan ki bhasha ka andaza message ke shabdon se hai. "Hindi" ya "Hinglish" likha ho to Roman Hinglish; sirf "English" to English; kuch nahi to saved choice, phir message ki bhasha.
+- Gemma chhota hai: 5 phase ke bullet kabhi kamzor ya dohrate ho sakte hain. App sirf dhaancha, hawale, bhasha, `PASS:` aur teen galat tech baatein pakadti hai.
+
+## Phone check (about 12 minute, Gemma brain, internet band bhi chalega)
+
+1. Chat me pehle likho: "coding assistant app banana hai jisme AI code likhe", "light theme chahiye, bada input box aur neeche output area", "settings me model size aur temperature ho, history bhi".
+2. "Ek prompt do, poora plan, dusra AI coding kar de". Plan hissa-dar banta dikhe ("Plan: hissa 4 / 8"). Caption: "Plan builder · Gemma 4 E2B · 5/5 phase · 8 call".
+3. Plan me "## 2. Faisle" ke neeche tumhare teeno lines waise ke waise, **"as discussed" kahin nahi**, Phase 1 se 5 sab me "Pass test:", aakhir me "Is plan me 5 phase hain". "GGUF ko TFLite" jaisi line nahi.
+4. "English latter rakho or Hindi bhasha me do ye": wahi plan Roman Hinglish me, phase ginti wahi 5. KPI > "Plan builder (T3)": "bhasha badal kar dobara: 1".
+5. "Goa trip ka detailed plan banao": builder nahi chalna chahiye (KPI "plan bane" nahi badhna).
+6. Settings me switch band karke wahi maang: purana raasta (builder nahi).
+7. Plan banate waqt Stop dabao: jo ban chuka wo bachna chahiye ("Beech mein roka gaya").
+8. Agar caption me "adhura" aaye: plan ke aakhir ka "Dhyan: ..." padh kar bhejo (kaun sa hissa, kya galat).
+
+
+# Test-chat fixes, Phase T4 of 4 (14 Oct 2026): sketch (bina training)
+
+Source: report galti 6 ("coding assistant me AI ko sketch banane ki skills deni hain" par 5 point ki training list). **Sirf phone brain (Gemma).** Gemini nahi chhua.
+
+## Kya badla
+
+| File | Badlav |
+|---|---|
+| `Sketch.kt` (naya, pure Kotlin) | Skill = tool + format. Model sirf ek chhota JSON likhta hai, app jaanchti aur banati hai. 3 kism: **flowchart** (model sirf 2 se 8 label deta hai; app box aur teer rakhti hai, 3 box ki row, doosri row ulti taraf taaki row badalne wala teer seedha neeche jaye), **wireframe** (app screen: `header:Chat`, `list`, `input:...`, `button:...`, `text`, `image`; phone frame me upar se neeche, zyada ho to chhota ho kar), **shapes** (rect / tri / circle / line / text, 100 x 100 canvas, zyada se zyada 40). Jaanch: JSON na ho, kism na mile, 2 se kam flowchart item, anjaan shape, coordinate -5 se 105 ke bahar, w / h / r galat: refuse + wajah. Thoda bahar (-5..105) ho to 0..100 me clamp. `toJson` / `fromJson`: message me wahi JSON rakhi jaati hai. `SketchIntent`: seedha order ("ek sketch banao: ghar", "login ka flowchart banao") = drawing; **feature ki baat** ("AI ko sketch banane ki skills deni hain") = ek fixed sawaal, model ko nahi bheja: "drawing, flowchart, wireframe ya code ka khaka?". Uske baad "Training nahin dena hai ..." = fixed jawab ki training nahi lagti |
+| `SketchView.kt` (naya), `item_msg_ai.xml`, `MessagesAdapter.kt`, `Models.kt` | `Message.sketch` (JSON, purani chats me null). AI reply ke text ke neeche ek square view me drawing: app ke accent / card rang. Aur koi touch nahi |
+| `ChatRunner.kt` | `runSketch`: ek Gemma call (system me 3 udaharan), galat jawab par ek retry reason ke saath, phir bhi galat to saaf line "Sketch nahi ban paya (wajah)". `quickReply` me `sketchClarify`. Caption "Sketch · Gemma 4 E2B · Ns" |
+| `ConvKpi.kt` | Naya block "Sketch (T4)" |
+
+Naye tests: `SketchTest` (16).
+
+## Jaan-boojh kar nahi kiya (aur PLAN se farq)
+
+- **`ToolSpecs` me `draw_sketch` tool nahi joda.** PLAN me yahi likha tha, par (1) phone model ka tool prompt bhara hua hai (3,319 / 3,400 akshar) aur naya tool use todta, (2) task engine ka natija sirf text hota hai, drawing ka JSON nahi le ja sakta. Isliye sketch ka apna raasta hai; tool prompt ya `ToolSpecsTest` me kuch nahi badla. Natija wahi: bina training ke Gemma se chitra.
+- Free-hand SVG nahi (report ka "baad me"). Sirf teen fixed kism.
+- Gemini brain par sketch maangne par pehle jaisa text jawab aata hai. Voice se bhi nahi.
+- Chitra save / share / zoom nahi. Sirf chat me dikhta hai.
+
+## Seemayein (zaroor padho)
+
+- **Compile nahi hua, test chale nahi.** Template ke coordinate Python me dohra kar ke dekhe: 2 se 8 box aur 8 wireframe part sab 0..100 ke andar. `SketchView` ka drawing (rang, text ka size, teer ka sira) kabhi dekha nahi gaya: phone par pehli baar dikhega, tedha ho sakta hai.
+- Gson ka `JsonParser.parseString` thoda dheela (lenient) parse karta hai: kuch toote JSON galti se chal sakte hain; tab bhi coordinate / kism ki jaanch lagti hai.
+- Chhota model galat kism chun sakta hai (flowchart ki jagah shapes). App use refuse nahi karti jab tak JSON sahi ho.
+- "Sketch sawaal" ka reply `ActivityLog` me ek entry banata hai (MemoryCommands ke "naam" jawab jaisa).
+- Message ka text sirf "<title> (<kism>)" hai; chitra ke neeche kuch likha nahi aata.
+
+## Phone check (about 8 minute, Gemma brain)
+
+1. "ek sketch banao: ghar" -> ghar (deewar, chhat, dhoop) ya, kam se kam, ek saaf galti-line "Sketch nahi ban paya (...)".
+2. "login ka flowchart banao" -> 3 se 5 box, teer sahi disha me.
+3. "chat screen ka wireframe banao" -> phone frame me header, list, input, button.
+4. "coding assistant me AI ko sketch banane ki skills deni hain" -> training list nahi, ek sawaal ("drawing, flowchart, wireframe ya code ka khaka?").
+5. Uske turant baad "Training nahin dena hai, skills deni hain" -> "Theek hai, koi training nahi ...".
+6. "sketch kya hota hai" -> normal jawab (drawing nahi).
+7. App band karke kholo: chitra chat me wapas dikhna chahiye (Message.sketch save hota hai).
+8. KPI > "Sketch (T4)": maange / bane / nahi bane / dobara likhwaya / "skills" par sawaal.

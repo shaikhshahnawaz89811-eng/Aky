@@ -90,7 +90,23 @@ object ChatRunner {
         val provider = Store.brainProvider
 
         val tool: Tier0.Result? = quickReply(app, latest, history)
-        val engine = if (tool != null) "tool" else provider
+        // T2: a heavy plan / roadmap / prompt-writing question goes to Gemini even when the phone brain is chosen
+        // (Settings switch, a saved Gemini key is needed; see FallbackPolicy.escalateHeavyPlan)
+        // T3: "ek prompt do, poora plan, dusra AI coding kar de" on the phone brain: the app writes the plan box by box with Gemma
+        // (PlanBuilder). It comes BEFORE the heavy-plan hand-over to Gemini: the Gemini path is untested, the builder is offline.
+        val planSrc: PlanBuilder.Source? =
+            if (tool == null && !viaVoice && provider == "local" && Store.planBuilder && latest.attachments.isEmpty()) {
+                PlanBuilder.source(latest.text, history)
+            } else {
+                null
+            }
+        // T4: "ek sketch banao: ghar" on the phone brain: Gemma writes one small JSON, the app checks it and draws it (Sketch)
+        val sketchReq = tool == null && planSrc == null && !viaVoice && provider == "local" &&
+            latest.attachments.isEmpty() && SketchIntent.isRequest(latest.text)
+        val heavy = tool == null && planSrc == null && !sketchReq && FallbackPolicy.escalateHeavyPlan(
+            latest.text, provider, !Store.geminiKey.isNullOrBlank(), Store.heavyPlanToGemini
+        )
+        val engine = if (tool != null) "tool" else if (planSrc != null || sketchReq) "local" else if (heavy) "gemini" else provider
         val run = Run(chatId, UUID.randomUUID().toString(), engine, viaVoice)
         current = run
 
@@ -116,6 +132,9 @@ object ChatRunner {
                             undoId = if (tool.undo != null) entry.id else null
                         )
                     }
+                    planSrc != null -> runPlanBuild(app, run, history, latest, planSrc)
+                    sketchReq -> runSketch(run, latest)
+                    heavy -> runHeavyPlan(app, run, history, latest)
                     provider == "gemini" -> runGeminiWithFallback(app, run, history, latest)
                     else -> runLocal(app, run, history, latest)
                 }
@@ -144,10 +163,19 @@ object ChatRunner {
         val quick = CorrectionRunner.tryFix(app, latest.text, lastAi)
             ?: PlanEditRunner.tryEdit(app, latest.text, lastAi)
             ?: Tier0.followUp(app, latest.text, lastTool)
+            ?: sketchClarify(latest.text, lastTool)
             ?: MemoryStore.command(latest.text)
             ?: Tier0.handle(app, latest.text)
         if (quick == null) MemoryStore.autoLearn(latest.text)
         return quick
+    }
+
+    /** T4: talk about giving the AI a sketch skill gets one fixed question (no model call, no training list). */
+    private fun sketchClarify(text: String, lastTool: String?): Tier0.Result? {
+        val reply = SketchIntent.clarify(text, lastTool) ?: return null
+        ConvKpi.inc("sk_clarify")
+        val title = if (reply == SketchIntent.CLARIFY_REPLY) SketchIntent.CLARIFY_NOTE else "Sketch"
+        return Tier0.Result(title, reply)
     }
 
     private fun isActionReply(m: Message): Boolean =
@@ -337,6 +365,31 @@ object ChatRunner {
         }
     }
 
+    /**
+     * T2: the phone brain is chosen but the question is a heavy plan / roadmap / prompt request: Gemini answers this turn.
+     * The user chose the phone brain, so ANY Gemini failure (no internet, bad key, quota) hands the turn back to Gemma instead
+     * of showing an error; [Store.automaticFallback] does not matter here. The caption of the reply says what happened.
+     */
+    private suspend fun runHeavyPlan(app: Context, run: Run, history: List<Message>, latest: Message): Message {
+        ConvKpi.inc("heavy_to_gemini")
+        run.route = "heavy-gemini"
+        try {
+            val m = runGemini(app, run, history, latest)
+            run.detail = "heavy plan -> Gemini"
+            return m.copy(note = (m.note ?: "Gemini") + FallbackPolicy.HEAVY_NOTE)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            ConvKpi.inc("heavy_gemini_failed")
+            run.text = ""
+            run.engine = "local"
+            run.route = "heavy-gemini-failed"
+            run.detail = "heavy plan: Gemini failed, Gemma answered"
+            val local = runLocal(app, run, history, latest)
+            return local.copy(note = (local.note ?: LOCAL_NAME) + FallbackPolicy.HEAVY_FAILED_NOTE)
+        }
+    }
+
     private suspend fun runGemini(app: Context, run: Run, history: List<Message>, latest: Message): Message {
         val key = Store.geminiKey
             ?: throw ReplyError("Gemini API key set nahi hai. Voice and AI mein key daalo.")
@@ -456,7 +509,8 @@ object ChatRunner {
         return merged
     }
 
-    private suspend fun runLocal(app: Context, run: Run, history: List<Message>, latest: Message): Message {
+    /** The model must be installed and loaded before any local call: shared by [runLocal] and [runPlanBuild]. */
+    private suspend fun prepareLocal(run: Run) {
         when (Modules.phase) {
             Modules.Phase.NOT_IMPORTED, Modules.Phase.ERROR, Modules.Phase.DOWNLOADING, Modules.Phase.IMPORTING ->
                 throw ReplyError("Gemma 4 abhi taiyaar nahi hai. Voice and AI mein Download ya Import karo, ya Gemini chuno.")
@@ -475,6 +529,103 @@ object ChatRunner {
         }
         run.label = "Gemma soch raha hai"
         postProgress(run)
+    }
+
+    /**
+     * T3: the plan builder. The app fixes the headings and the 5 phases, copies the user's own chat lines into the plan, asks
+     * Gemma for one small box at a time and checks every box ([PlanBuilder.build]). Offline only: Gemini is not used here.
+     * Takes minutes on a phone (about 8 to 16 short generations); the plan grows on screen box by box.
+     */
+    private suspend fun runPlanBuild(
+        app: Context, run: Run, history: List<Message>, latest: Message, src: PlanBuilder.Source
+    ): Message {
+        ConvKpi.inc("pb_runs")
+        if (src.redo) ConvKpi.inc("pb_redo")
+        run.route = "plan-builder"
+        prepareLocal(run)
+        val lang = PlanBuilder.language(latest.text, MemoryStore.replyLanguage())
+        val req = PlanBuilder.Request(src.request, PlanBuilder.decisions(history, src.request), lang)
+        val started = System.currentTimeMillis()
+        val result = PlanBuilder.build(
+            req,
+            { system, user -> LocalLlm.chat(system, emptyList(), user, emptyList(), { run.cancelled }) { }.text },
+            { n, total, key, partial ->
+                run.label = "Plan: hissa $n / $total (" + key + ")"
+                run.phase = run.label
+                if (partial.isNotEmpty()) {
+                    if (run.firstTokenMs == 0L) run.firstTokenMs = System.currentTimeMillis() - run.startedAt
+                    run.text = partial
+                }
+                postProgress(run)
+            },
+            { run.cancelled }
+        )
+        val secs = (System.currentTimeMillis() - started) / 1000
+        ConvKpi.inc(if (result.ok) "pb_ok" else "pb_incomplete")
+        ConvKpi.inc("pb_retries", result.retries.toLong())
+        ConvKpi.inc("pb_tech_dropped", result.techDropped.toLong())
+        run.detail = "plan builder " + result.phases + "/" + PlanBuilder.PHASES + " phase, " + result.calls + " call" +
+            (if (result.ok) "" else ", adhura: " + result.problems.joinToString("; "))
+        val where = if (LocalLlm.backendName.isEmpty()) "" else " · " + LocalLlm.backendName.uppercase(Locale.US)
+        val caption = PlanBuilder.NOTE + " · " + LOCAL_NAME + where + " · " + result.phases + "/" + PlanBuilder.PHASES +
+            " phase · " + result.calls + " call · " + secs + "s" + (if (result.ok) "" else " · adhura")
+        return Message(id = run.messageId, role = Role.AI, text = result.text, engine = "local", note = caption)
+    }
+
+    /**
+     * T4: one Gemma call that must answer with ONE small JSON object ([Sketch.systemPrompt]); a wrong answer gets one retry with
+     * the reason. The checked drawing is stored in [Message.sketch] and drawn by SketchView. Offline only.
+     */
+    private suspend fun runSketch(run: Run, latest: Message): Message {
+        ConvKpi.inc("sk_runs")
+        run.route = "sketch"
+        prepareLocal(run)
+        run.label = "Sketch bana raha hoon"
+        postProgress(run)
+        val lang = PlanBuilder.language(latest.text, MemoryStore.replyLanguage())
+        val system = Sketch.systemPrompt(lang)
+        val ask = Sketch.userPrompt(latest.text)
+        val first = LocalLlm.chat(system, emptyList(), ask, emptyList(), { run.cancelled }) { }
+        var millis = first.millis
+        var parsed: Sketch.Parsed = Sketch.parse(first.text)
+        var retried = false
+        val bad = parsed
+        if (bad is Sketch.Parsed.Bad && !run.cancelled) {
+            ConvKpi.inc("sk_retry")
+            retried = true
+            run.label = "Sketch theek kar raha hoon"
+            postProgress(run)
+            val again = LocalLlm.chat(system, emptyList(), ask + Sketch.retryNote(bad.reason), emptyList(), { run.cancelled }) { }
+            millis += again.millis
+            parsed = Sketch.parse(again.text)
+        }
+        val where = if (LocalLlm.backendName.isEmpty()) "" else " · " + LocalLlm.backendName.uppercase(Locale.US)
+        val caption = "Sketch · $LOCAL_NAME$where · ${millis / 1000}s" + (if (retried) " · dobara" else "")
+        val result = parsed
+        return when (result) {
+            is Sketch.Parsed.Ok -> {
+                ConvKpi.inc("sk_ok")
+                run.detail = "sketch " + result.kind + ", " + result.drawing.shapes.size + " shapes"
+                Message(
+                    id = run.messageId, role = Role.AI, engine = "local", note = caption,
+                    text = result.drawing.title + " (" + Sketch.kindLabel(result.kind) + ")",
+                    sketch = Sketch.toJson(result.drawing)
+                )
+            }
+            is Sketch.Parsed.Bad -> {
+                ConvKpi.inc("sk_failed")
+                run.detail = "sketch refused: " + result.reason
+                Message(
+                    id = run.messageId, role = Role.AI, engine = "local", note = caption,
+                    text = "Sketch nahi ban paya (" + result.reason + "). Thoda saaf likho, jaise: " +
+                        "\"sketch banao: ghar\" ya \"login ka flowchart banao\"."
+                )
+            }
+        }
+    }
+
+    private suspend fun runLocal(app: Context, run: Run, history: List<Message>, latest: Message): Message {
+        prepareLocal(run)
 
         // Images go to the model as pictures (Gemma 4 is multimodal); text files are inlined as for Gemini.
         val payload = withContext(Dispatchers.IO) {
@@ -484,14 +635,15 @@ object ChatRunner {
         val past = recentTurns(localHistory(history))
 
         // Phone tools only for a plain, short, action-looking message (same rule as before; a few hundred tokens).
-        val wantTools = latest.attachments.isEmpty() && ActionHint.looksLikeAction(latest.text)
+        // "<app> on karo" counts too, when the words name an installed app (test chat 13 Oct 2026: "WhatsApp on karo").
+        var wantTools = latest.attachments.isEmpty() && ActionHint.looksLikeAction(latest.text) { Tier0.installedAppNames(app) }
         var system = Prompts.systemLocal(run.viaVoice, latest.text)
         if (wantTools) {
             system += "\n" + Prompts.TOOL_RULES + "\n" + Prompts.LOCAL_TOOL_HINT + "\n\n" + ToolSpecs.qwenToolsBlock()
         }
 
         var lastPost = 0L
-        val reply = LocalLlm.chat(system, past, userText, payload.images, { run.cancelled }) { delta ->
+        var reply = LocalLlm.chat(system, past, userText, payload.images, { run.cancelled }) { delta ->
             // a tool call is parsed first, so its raw "<tool_call>" text is never shown while it is written
             if (!wantTools) {
                 if (run.firstTokenMs == 0L) run.firstTokenMs = System.currentTimeMillis() - run.startedAt
@@ -503,11 +655,26 @@ object ChatRunner {
                 }
             }
         }
+        // The tools were off and the model said "main ek AI hoon, phone par ye nahi kar sakta" to a short order: that is false.
+        // Ask once more WITH the tools (only for orders, never for questions about ability: see ToolRefusal).
+        var extraMs = 0L
+        if (!wantTools && latest.attachments.isEmpty() && !run.cancelled &&
+            ToolRefusal.shouldRetryWithTools(latest.text, reply.text)
+        ) {
+            ConvKpi.inc("local_refusal_retry")
+            run.label = "Phone tools ke saath dobara try kar raha hoon"
+            run.text = ""
+            postProgress(run)
+            wantTools = true
+            system += "\n" + Prompts.TOOL_RULES + "\n" + Prompts.LOCAL_TOOL_HINT + "\n\n" + ToolSpecs.qwenToolsBlock()
+            extraMs = reply.millis
+            reply = LocalLlm.chat(system, past, userText, payload.images, { run.cancelled }) { }
+        }
         run.tokens = reply.tokens
         run.tps = reply.tokensPerSecond
         val speed = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
         val where = if (LocalLlm.backendName.isEmpty()) "" else " · " + LocalLlm.backendName.uppercase(Locale.US)
-        var caption = "$LOCAL_NAME$where · ~$speed tok/s · ${reply.millis / 1000}s"
+        var caption = "$LOCAL_NAME$where · ~$speed tok/s · ${(reply.millis + extraMs) / 1000}s"
 
         var finalText = reply.text.trim()
         if (wantTools && finalText.isNotEmpty()) {
@@ -522,7 +689,7 @@ object ChatRunner {
                     Message(role = Role.USER, text = userText) +
                     Message(role = Role.AI, text = finalText)
                 val again = LocalLlm.chat(system, withAnswer, note, emptyList(), { run.cancelled }) { }
-                caption = "$LOCAL_NAME$where · ${(reply.millis + again.millis) / 1000}s"
+                caption = "$LOCAL_NAME$where · ${(reply.millis + extraMs + again.millis) / 1000}s"
                 parsed = PlanParser.parse(again.text)
             }
             when (parsed) {
@@ -537,6 +704,41 @@ object ChatRunner {
                 }
                 is PlanParser.Parsed.Text -> finalText = parsed.text.trim()
             }
+        }
+        // T2 (test chat 13 Oct 2026): the user wants Hinglish (said so, or writes it) and Gemma answered in English. Ask ONCE more,
+        // with the rule repeated in the user turn. A retry that is still in the wrong language is dropped: the first answer stays.
+        // Not for tool turns, code, or short replies (ReplyGuard.languageMismatch never judges those).
+        val remembered = MemoryStore.replyLanguage()
+        val wantLang = ReplyGuard.wantedLanguage(latest.text, remembered)
+        if (wantLang != null && !wantTools && finalText.isNotEmpty() && !run.cancelled &&
+            ReplyGuard.languageMismatch(latest.text, finalText, remembered)
+        ) {
+            ConvKpi.inc("local_lang_retry")
+            run.label = if (wantLang == LocalMemory.LANG_ENGLISH) "English mein dobara bana raha hoon" else "Hinglish mein dobara bana raha hoon"
+            run.text = ""
+            postProgress(run)
+            val langSystem = system + "\n" + Prompts.languageLine(wantLang)
+            val again = LocalLlm.chat(
+                langSystem, past, userText + "\n\n" + ReplyGuard.retryNote(wantLang), payload.images, { run.cancelled }
+            ) { delta ->
+                if (run.firstTokenMs == 0L) run.firstTokenMs = System.currentTimeMillis() - run.startedAt
+                run.text = run.text + delta
+                val now = System.currentTimeMillis()
+                if (now - lastPost > 90) {
+                    lastPost = now
+                    postProgress(run)
+                }
+            }
+            val againText = again.text.trim()
+            if (againText.isNotEmpty() && !ReplyGuard.languageMismatch(latest.text, againText, remembered)) {
+                ConvKpi.inc("local_lang_retry_ok")
+                finalText = againText
+                caption += " · bhasha retry +" + (again.millis / 1000) + "s"
+            } else {
+                ConvKpi.inc("local_lang_retry_failed")
+                caption += " · bhasha retry ke baad bhi nahi badli"
+            }
+            run.detail = "language retry"
         }
         if (finalText.isEmpty()) {
             run.detail = "local reply empty"

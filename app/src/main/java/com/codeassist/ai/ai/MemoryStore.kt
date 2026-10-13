@@ -76,6 +76,9 @@ object MemoryStore {
 
     // ---------- the chat ----------
 
+    /** T2: the user's language choice ("Hinglish me batao"), or null when there is none. */
+    fun replyLanguage(now: Long = System.currentTimeMillis()): String? = MemoryBook.replyLanguage(all(now), now)
+
     /** The few relevant facts for a model prompt, or "". [userText] is the message being answered. */
     fun promptBlock(userText: String): String = MemoryBook.promptBlock(all(), userText, System.currentTimeMillis())
 

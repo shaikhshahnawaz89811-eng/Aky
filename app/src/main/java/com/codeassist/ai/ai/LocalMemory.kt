@@ -30,7 +30,11 @@ object LocalMemory {
         "hai", "hain", "h", "he", "hoon", "hu", "hun", "hoo", "ho", "aur", "and", "or", "mein", "me", "mai",
         "ko", "ka", "ki", "ke", "se", "par", "pe", "bahut", "bohot", "ji", "bhi", "toh", "to", "na", "yaar",
         "rehta", "rehti", "pasand", "passand", "lekin", "but", "ye", "yeh", "wo", "woh", "kuch", "sab", "koi",
-        "kya", "kaun", "kahan", "kab", "btao", "batao", "bata", "bataiye", "bolo", "sunao", "pata", "nahi", "nahin", "kon"
+        "kya", "kaun", "kahan", "kab", "btao", "batao", "bata", "bataiye", "bolo", "sunao", "pata", "nahi", "nahin", "kon",
+        // Test-chat fix (13 Oct 2026): "mera naam jante hoo" saved the name "Jante". Words of a QUESTION or an order about
+        // the name are never part of a name. ("kar" is left out on purpose: Kar is a real surname.)
+        "jante", "jaante", "janta", "jaanta", "jaanti", "janti", "yaad", "yad", "tumhe", "tumko", "aapko", "kaise",
+        "kyu", "kyun", "kyon", "bhool", "rakho", "rakhna", "rakhiye", "dikhao", "likho"
     )
 
     /** A note that ends on one of these is a cut-off sentence ("mera naam or meri bhanji ko"): not worth keeping. */
@@ -55,10 +59,95 @@ object LocalMemory {
         "(?i)^\\s*(?:tum\\s+|aap\\s+)?(?:mere\\s+(?:baare|bare)\\s+mein\\s+(?:kya|kuch)\\s+(?:jaante|jante|pata|yaad)\\b.*|" +
             "kya\\s+yaad\\s+hai.*|what\\s+do\\s+you\\s+(?:remember|know)\\s+about\\s+me.*|meri\\s+yaad(?:dasht)?\\s+dikhao.*)$"
     )
+    /**
+     * "mera naam kya hai", "kya tum mera naam jante ho", "tumhe mera naam yaad hai?" (Roman Hinglish) and "what is my name",
+     * "do you know my name" (English). Matched on the whole message after [plain]. A statement ("mera naam Rahul hai") or an
+     * order ("mera naam yaad rakhna") does not match: the word right after "mera naam" must be a question word.
+     */
+    private val askNameHiRx = Regex(
+        "^(?:(?:kya|tum|tumhe|tumko|aap|aapko|aapke|mujhe|suno|achha|accha|acha|ok|okay|bhai|yaar)\\s+)*" +
+            "(?:mera|meraa)\\s+(?:naam|name|nam)\\s+" +
+            "(?:kya|kaun|kon|jante|jaante|janta|jaanta|jaanti|yaad|yad|pata|batao|bata|btao|bolo|bataiye|sunao)" +
+            "(?:\\s+(?:hai|h|he|hain|ho|hoo|hu|hoon|kya|na|yaar|tumhe|tumko|aapko|aap|tum|bhi|mujhe|ji))*$"
+    )
+    private val askNameEnRx = Regex(
+        "^(?:(?:hey|hi|ok|okay|please|pls)\\s+)*" +
+            "(?:do\\s+you\\s+(?:know|remember)|can\\s+you\\s+(?:tell|remind)\\s+me|what\\s+is|what\\s+s|whats|tell\\s+me|remind\\s+me)" +
+            "\\s+my\\s+name(?:\\s+(?:please|pls))?$"
+    )
+
     private val forgetRx = Regex(
         "(?i)^\\s*(?:sab\\s+(?:kuch\\s+)?bhool\\s+jao|sab\\s+bhool\\s+ja|bhool\\s+jao|forget\\s+everything|forget\\s+me|" +
             "yaad\\s+(?:hata|mita|saaf)\\s+do|memory\\s+clear\\s+karo)\\s*[.!]?\\s*$"
     )
+
+    // ---------- the language choice (T2, test chat 13 Oct 2026) ----------
+
+    const val KIND_REPLY_LANGUAGE = "reply_language"
+    const val LANG_HINGLISH = "hinglish"
+    const val LANG_ENGLISH = "english"
+    const val FACT_HINGLISH = "The user wants all replies in Roman Hinglish (Hindi written in English letters)."
+    const val FACT_ENGLISH = "The user wants all replies in English."
+
+    private const val LANG_HI_NAMES = "(?:hinglish|roman\\s+hinglish|roman\\s+hindi|hindi\\s+in\\s+english(?:\\s+letters)?)"
+    private const val LANG_POST = "(?:me|mein|mai|main|mei|m)"
+    private const val LANG_SPEAK =
+        "(?:batao|bata|btao|bataiye|bolo|bol|bolna|jawab|jawaab|jwab|reply|answer|baat|baatein|baten|respond|speak|talk)"
+
+    /**
+     * The phrases that choose a language, matched on [plain] text. Conversation verbs only (batao, jawab, baat): "english me
+     * translate karo" and "hinglish me likho" are one-off tasks, not a choice. Three shapes: "hinglish me (hi) batao",
+     * "reply in hinglish", and "hinglish only" / "ab se hinglish me".
+     */
+    private fun languageShapes(name: String): List<Regex> = listOf(
+        Regex("(?<!$L)$name\\s+$LANG_POST\\s+(?:hi\\s+)?$LANG_SPEAK(?!$L)"),
+        Regex("(?<!$L)(?:reply|answer|respond|speak|talk)\\s+(?:to\\s+me\\s+|me\\s+)?in\\s+$name(?!$L)"),
+        Regex(
+            "(?<!$L)(?:$name\\s+only|(?:ab\\s+se|aaj\\s+se|hamesha|always|from\\s+now(?:\\s+on)?)" +
+                "\\s+(?:sirf\\s+|only\\s+)?$name\\s+$LANG_POST)(?!$L)"
+        )
+    )
+
+    private val languageRxs: List<Pair<String, List<Regex>>> = listOf(
+        LANG_HINGLISH to languageShapes(LANG_HI_NAMES),
+        LANG_ENGLISH to languageShapes("english")
+    )
+
+    /**
+     * "hinglish" or "english" when [text] tells the assistant which language to answer in; null otherwise. When a message holds
+     * both ("english me nahi, hinglish me batao") the later phrase wins.
+     */
+    fun languageChoice(text: String): String? {
+        val p = plain(text)
+        if (p.isEmpty()) return null
+        var bestEnd = -1
+        var best: String? = null
+        for ((lang, shapes) in languageRxs) {
+            for (rx in shapes) {
+                for (m in rx.findAll(p)) {
+                    if (m.range.last > bestEnd) {
+                        bestEnd = m.range.last
+                        best = lang
+                    }
+                }
+            }
+        }
+        return best
+    }
+
+    /** The stored line (kind reply_language) for a choice. The same kind replaces the older one, so the newest choice is the only one. */
+    fun languageFact(lang: String): String =
+        encode(KIND_REPLY_LANGUAGE, if (lang == LANG_ENGLISH) FACT_ENGLISH else FACT_HINGLISH)
+
+    /** The language a stored sentence stands for (the user may have edited it in the Memory screen); null when it names none. */
+    fun languageOfFact(text: String): String? {
+        val t = text.lowercase()
+        return when {
+            t.contains("hinglish") -> LANG_HINGLISH
+            t.contains("english") -> LANG_ENGLISH
+            else -> null
+        }
+    }
 
     // ---------- reading what the user said ----------
 
@@ -66,12 +155,15 @@ object LocalMemory {
     fun extract(text: String): List<String> {
         val t = text.trim()
         if (t.isEmpty() || t.length > 300) return emptyList()
+        if (t.endsWith("?")) return emptyList() // a question is not a statement about the user
         val out = ArrayList<String>()
         pick(nameRx, t, 2)?.let { out.add(encode("name", "The user's name is " + titleCase(it) + ".")) }
         (pick(livesRx, t, 3) ?: pick(livesEnRx, t, 3))?.let {
             out.add(encode("lives", "The user lives in " + titleCase(it) + "."))
         }
         pick(likesRx, t, 4)?.let { out.add(encode("like:" + it.lowercase(), "The user likes " + it.lowercase() + ".")) }
+        // T2: "Hinglish me batao" is a standing choice of language, kept like a fact (kind reply_language)
+        languageChoice(t)?.let { out.add(languageFact(it)) }
         return out
     }
 
@@ -98,6 +190,9 @@ object LocalMemory {
         object Show : Cmd()
         class Remember(val note: String) : Cmd()
 
+        /** "mera naam kya hai" / "mera naam jante ho": answered from the stored name, never by the model. */
+        object AskName : Cmd()
+
         /** "yaad rakho ki mera naam or meri bhanji ko": a cut-off sentence, not worth keeping. */
         object Incomplete : Cmd()
     }
@@ -111,6 +206,8 @@ object LocalMemory {
         if (t.isEmpty() || t.length > 240) return null
         if (forgetRx.matches(t)) return Cmd.Forget
         if (showRx.matches(t)) return Cmd.Show
+        val plainText = plain(t)
+        if (askNameHiRx.matches(plainText) || askNameEnRx.matches(plainText)) return Cmd.AskName
         val m = if (t.endsWith("?")) null else rememberRx.find(t)
         if (m != null) {
             val note = m.groupValues[1].trim().trimEnd('.', '!').replace(Regex("\\s+"), " ").take(MAX_TEXT)
@@ -138,12 +235,56 @@ object LocalMemory {
                     Outcome("Mujhe aapke baare mein ye yaad hai:\n$lines\n\nSab bhulana ho toh bolo \"bhool jao\".", null)
                 }
             is Cmd.Incomplete -> Outcome(INCOMPLETE_REPLY, null)
+            is Cmd.AskName -> Outcome(nameReply(findName(current.map { kindOf(it) to readable(it) })), null)
             is Cmd.Remember -> {
                 val merged = merge(current, listOf(encode("note:" + c.note.lowercase().take(40), c.note)))
                 Outcome("Theek hai, yaad rakh liya: " + c.note, merged)
             }
         }
     }
+
+    // ---------- the name ----------
+
+    const val NAME_UNKNOWN_REPLY = "Mujhe abhi aapka naam nahi pata. Bataiye, aapka naam kya hai?"
+
+    private val nameLineRx = Regex("^The user's name is (.+?)\\.?$")
+
+    /** Lower case, every run of punctuation / symbols turned into one space: "What's my name?" -> "what s my name". */
+    private fun plain(text: String): String =
+        text.lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{N}]+"), " ").trim()
+
+    /** False when a word of [name] is a filler / question word: an old wrong save such as "Jante" is then never read out. */
+    fun validName(name: String): Boolean {
+        val words = name.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        return words.isNotEmpty() && words.none { it.lowercase() in stopWords }
+    }
+
+    /** The name inside a stored sentence "The user's name is Rahul.", or null. */
+    fun nameFrom(readableText: String): String? {
+        val n = nameLineRx.find(readableText.trim())?.groupValues?.get(1)?.trim() ?: return null
+        return if (validName(n)) n else null
+    }
+
+    /** True for a stored sentence "The user's name is Jante." whose name is a filler / question word (a wrong save of the old rule). */
+    fun isWrongName(readableText: String): Boolean {
+        val n = nameLineRx.find(readableText.trim())?.groupValues?.get(1)?.trim() ?: return false
+        return !validName(n)
+    }
+
+    /**
+     * The user's name from stored (kind, text) pairs: the "name" fact first; else a note that states it
+     * ("yaad rakho ki mera naam Rahul hai"). Null when no usable name is stored.
+     */
+    fun findName(entries: List<Pair<String, String>>): String? {
+        entries.filter { it.first == "name" }.mapNotNull { nameFrom(it.second) }.firstOrNull()?.let { return it }
+        for ((_, text) in entries) {
+            val fact = extract(text).firstOrNull { kindOf(it) == "name" } ?: continue
+            nameFrom(readable(fact))?.let { return it }
+        }
+        return null
+    }
+
+    fun nameReply(name: String?): String = if (name == null) NAME_UNKNOWN_REPLY else "Aapka naam $name hai."
 
     // ---------- storing ----------
 

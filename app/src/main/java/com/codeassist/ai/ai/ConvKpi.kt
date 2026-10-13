@@ -214,6 +214,23 @@ object ConvKpi {
             .append(" · reject: ").append(get("local_guard_fail"))
             .append(" · photo par seedha jawab: ").append(get("local_image_block")).append("\n")
 
+        sb.append("\nBhasha aur bhaari sawaal (T2)\n")
+        sb.append("  Hinglish / English retry: ").append(get("local_lang_retry")).append(" · theek hua: ")
+            .append(get("local_lang_retry_ok")).append(" · phir bhi galat bhasha: ").append(get("local_lang_retry_failed")).append("\n")
+        sb.append("  bhaari plan sawaal Gemini ko: ").append(get("heavy_to_gemini"))
+            .append(" · Gemini nahi mila (Gemma ne diya): ").append(get("heavy_gemini_failed")).append("\n")
+
+        sb.append("\nPlan builder (T3)\n")
+        sb.append("  plan bane: ").append(get("pb_runs")).append(" (bhasha badal kar dobara: ").append(get("pb_redo"))
+            .append(") · poore: ").append(get("pb_ok")).append(" · adhure: ").append(get("pb_incomplete")).append("\n")
+        sb.append("  hisse dobara likhwaye: ").append(get("pb_retries"))
+            .append(" · galat tech wali lines hata di: ").append(get("pb_tech_dropped")).append("\n")
+
+        sb.append("\nSketch (T4)\n")
+        sb.append("  sketch maange: ").append(get("sk_runs")).append(" · bane: ").append(get("sk_ok"))
+            .append(" · nahi bane: ").append(get("sk_failed")).append(" · dobara likhwaya: ").append(get("sk_retry"))
+            .append(" · \"skills\" par sawaal: ").append(get("sk_clarify")).append("\n")
+
         sb.append("\nTask engine (Phase 3)\n")
         sb.append("  plans: ").append(get("plan_runs")).append(" · 2+ kaam wale: ").append(get("plan_multi"))
             .append(" · `after` (dependency) wale: ").append(get("plan_with_deps")).append("\n")

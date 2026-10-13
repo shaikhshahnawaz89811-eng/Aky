@@ -433,17 +433,26 @@ object Tier0 {
         )
     }
 
-    private val openPrefix = Regex("^(open|launch|start|kholo|khol) (.+)$")
-    private val openSuffix = Regex("^(.+?) (kholo|khol do|khol|open karo|open kar do|open|chalu karo|start karo|launch karo)$")
-
     private class AppInfo(val label: String, val norm: String, val pkg: String)
 
+    /** The phrases ("open whatsapp", "whatsapp on karo", "youtube chalu kar do") are read by [OpenPhrase]; the phone lookup is here. */
     private fun openApp(ctx: Context, t: String): Result? {
-        var name = openPrefix.find(t)?.groupValues?.get(2) ?: openSuffix.find(t)?.groupValues?.get(1) ?: return null
-        name = name.replace(Regex("^(the |app )+"), "").replace(Regex("( app| ko| please)+$"), "").trim()
-        if (name.length < 2) return null
-        return openByName(ctx, name)
+        val req = OpenPhrase.parse(t) ?: return null
+        return openByName(ctx, req.name, req.strict)
     }
+
+    /**
+     * Normalized labels of the launchable apps (lower case, as [openByName] compares them). [ActionHint] uses this to see that
+     * "whatsapp on karo" names an installed app. Empty when the phone does not let the app list the others.
+     */
+    fun installedAppNames(ctx: Context): List<String> =
+        try {
+            val pm = ctx.packageManager
+            val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            pm.queryIntentActivities(query, 0).map { normalize(it.loadLabel(pm).toString()) }.filter { it.isNotEmpty() }.distinct()
+        } catch (_: Exception) {
+            emptyList()
+        }
 
     /** Structured entry (brain tool call): an unknown app name is an answer, not "let the brain handle it". */
     fun runOpenApp(ctx: Context, rawName: String): Result {
@@ -452,7 +461,8 @@ object Tier0 {
         return openByName(ctx, name) ?: Result("Open app", "\"" + rawName.trim() + "\" naam ka app nahi mila.", ok = false)
     }
 
-    private fun openByName(ctx: Context, name: String): Result? {
+    /** [strict]: the "on karo" phrases. Only an exact app name, or a prefix of 4+ letters, counts; "contains" never does. */
+    private fun openByName(ctx: Context, name: String, strict: Boolean = false): Result? {
         val pm = ctx.packageManager
         val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val apps = pm.queryIntentActivities(query, 0)
@@ -461,7 +471,8 @@ object Tier0 {
         val exact = apps.filter { it.norm == name }
         val matches = when {
             exact.isNotEmpty() -> exact
-            apps.any { it.norm.startsWith(name) } -> apps.filter { it.norm.startsWith(name) }
+            apps.any { it.norm.startsWith(name) } && (!strict || name.length >= 4) -> apps.filter { it.norm.startsWith(name) }
+            strict -> emptyList<AppInfo>()
             else -> apps.filter { it.norm.contains(name) }
         }
         if (matches.isEmpty()) return null // not an app request: let the brain answer

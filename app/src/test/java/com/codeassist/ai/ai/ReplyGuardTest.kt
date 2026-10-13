@@ -183,4 +183,56 @@ class ReplyGuardTest {
         val t = "Title\n" + "-".repeat(50) + "\nBody text that is long enough to be kept as a normal answer."
         assertTrue(ReplyGuard.inspect(t, "show a table", false).ok)
     }
+
+    // ---------- T2: language (test chat 13 Oct 2026) ----------
+
+    private val devanagari = "\u092C\u093E\u0907\u0928\u0930\u0940 \u0938\u0930\u094D\u091A \u090F\u0915 \u0938\u0949\u0930\u094D\u091F\u0947\u0921 \u090F\u0930\u0947 \u092A\u0930 \u0915\u093E\u092E \u0915\u0930\u0924\u093E \u0939\u0948 \u0914\u0930 \u0939\u0930 \u0915\u0926\u092E \u092A\u0930 \u0906\u0927\u093E \u0939\u093F\u0938\u094D\u0938\u093E \u0939\u091F\u093E \u0926\u0947\u0924\u093E \u0939\u0948"
+
+    @Test fun aHinglishQuestionWithAnEnglishReplyIsAMismatch() {
+        assertTrue(ReplyGuard.languageMismatch("binary search kya hai", english, null))
+        assertFalse(ReplyGuard.languageMismatch("binary search kya hai", hinglish, null))
+    }
+
+    @Test fun anEnglishMessageWithoutAChoiceHasNoLanguageRule() {
+        assertNull(ReplyGuard.wantedLanguage("what is binary search", null))
+        assertFalse(ReplyGuard.languageMismatch("what is binary search", english, null))
+        assertFalse(ReplyGuard.languageMismatch("what is binary search", hinglish, null))
+    }
+
+    @Test fun aRememberedHinglishChoiceHoldsForAnEnglishMessage() {
+        assertEquals("hinglish", ReplyGuard.wantedLanguage("explain coroutines", "hinglish"))
+        assertTrue(ReplyGuard.languageMismatch("explain coroutines", english, "hinglish"))
+        assertFalse(ReplyGuard.languageMismatch("explain coroutines", hinglish, "hinglish"))
+    }
+
+    @Test fun aRememberedEnglishChoiceBeatsAHinglishMessage() {
+        assertEquals("english", ReplyGuard.wantedLanguage("binary search kya hai", "english"))
+        assertTrue(ReplyGuard.languageMismatch("binary search kya hai", hinglish, "english"))
+        assertFalse(ReplyGuard.languageMismatch("binary search kya hai", english, "english"))
+    }
+
+    @Test fun codeAndShortRepliesAreNeverJudgedForLanguage() {
+        assertFalse(ReplyGuard.languageMismatch("loop likho", code, "hinglish"))
+        assertFalse(ReplyGuard.languageMismatch("kaise ho", "I am fine, thanks.", null))
+    }
+
+    @Test fun devanagariIsTheWrongScriptOnlyWhenRomanHinglishWasChosen() {
+        assertTrue(ReplyGuard.languageMismatch("explain coroutines", devanagari, "hinglish"))
+        assertFalse(ReplyGuard.languageMismatch("coroutine kya hai", devanagari, null))
+        assertFalse(ReplyGuard.languageMismatch("explain coroutines", devanagari, null))
+    }
+
+    @Test fun theRetryNoteNamesTheLanguage() {
+        assertTrue(ReplyGuard.retryNote("hinglish").contains("Roman Hinglish"))
+        assertTrue(ReplyGuard.retryNote("english").contains("English"))
+    }
+
+    @Test fun aMessageThatAsksForEnglishOrATranslationHasNoLanguageRule() {
+        assertNull(ReplyGuard.wantedLanguage("isko english me translate karo: main ghar ja raha hoon", "hinglish"))
+        assertNull(ReplyGuard.wantedLanguage("translate this paragraph", "hinglish"))
+        assertNull(ReplyGuard.wantedLanguage("is line ko English me translate karo kal meeting hai", null))
+        assertFalse(ReplyGuard.languageMismatch("is line ko English me translate karo kal meeting hai", english, null))
+        // the choice itself is untouched for an ordinary message
+        assertEquals("hinglish", ReplyGuard.wantedLanguage("explain coroutines", "hinglish"))
+    }
 }

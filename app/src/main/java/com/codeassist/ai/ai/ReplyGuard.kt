@@ -144,6 +144,69 @@ object ReplyGuard {
         return words.size <= IMAGE_QUESTION_MAX_WORDS
     }
 
+    // ---------- language (T2, test chat 13 Oct 2026) ----------
+
+    /** A reply of fewer words than this is never judged: "Ji, theek hai." says nothing about the language. */
+    private const val LANG_MIN_WORDS = 8
+    private const val ENGLISH_MIN_MARKERS = 3
+    private const val ENGLISH_MIN_SHARE = 0.15
+    private const val DEVANAGARI_MAX_SHARE = 0.30
+
+    /** A message that holds one of these asks for another language or a translation for THIS answer (substring match, like [foreignOk]). */
+    private val otherLanguageWords = listOf("english", "angrezi", "translat", "anuvad")
+
+    /**
+     * The language the next reply must be in. The user's own choice comes first ([remembered]: "Hinglish me batao" is kept
+     * as reply_language and holds for every later message, even one written in English); else Hinglish when the message itself
+     * is Hinglish; else null = no rule. A message that asks for English or a translation has no rule either.
+     * [remembered] is [LocalMemory.LANG_HINGLISH], [LocalMemory.LANG_ENGLISH] or null.
+     */
+    fun wantedLanguage(userText: String, remembered: String?): String? {
+        // "is line ko English me translate karo": this answer is meant to be in another language, so there is no rule for it
+        val low = userText.lowercase()
+        if (otherLanguageWords.any { low.contains(it) }) return null
+        if (remembered == LocalMemory.LANG_HINGLISH || remembered == LocalMemory.LANG_ENGLISH) return remembered
+        return if (HinglishGuide.userWritesHinglish(userText)) LocalMemory.LANG_HINGLISH else null
+    }
+
+    /**
+     * True when [reply] is clearly in the wrong language for [wantedLanguage]. Code, very short replies and a message with no
+     * language rule are never judged. A Devanagari answer counts as wrong only when the user chose Roman Hinglish themselves;
+     * for a message that is merely written in Hinglish a Devanagari answer is fine.
+     */
+    fun languageMismatch(userText: String, reply: String, remembered: String?): Boolean {
+        val want = wantedLanguage(userText, remembered) ?: return false
+        if (reply.contains("```")) return false
+        val (hindi, total) = HinglishGuide.hindiShare(reply)
+        if (total < LANG_MIN_WORDS) return false
+        val dev = devanagariShare(reply)
+        if (want == LocalMemory.LANG_HINGLISH) {
+            if (remembered == LocalMemory.LANG_HINGLISH && dev > DEVANAGARI_MAX_SHARE) return true
+            if (dev > 0.0) return false
+            return hindi < maxOf(1, total / 30)
+        }
+        if (dev > DEVANAGARI_MAX_SHARE) return true
+        return hindi >= ENGLISH_MIN_MARKERS && hindi.toDouble() / total >= ENGLISH_MIN_SHARE
+    }
+
+    /** What is added to the user turn of the one language retry. */
+    fun retryNote(lang: String): String =
+        if (lang == LocalMemory.LANG_ENGLISH) "(Reply only in English.)"
+        else "(Reply only in Roman Hinglish: Hindi written in English letters. Do not answer in English sentences.)"
+
+    /** Share of Devanagari among the letters of [s]; 0.0 when there are no letters. */
+    private fun devanagariShare(s: String): Double {
+        var letters = 0
+        var dev = 0
+        for (ch in s) {
+            if (ch.isLetter()) {
+                letters++
+                if (ch in '\u0900'..'\u097F') dev++
+            }
+        }
+        return if (letters == 0) 0.0 else dev.toDouble() / letters
+    }
+
     // ---------- detectors ----------
 
     private fun isForeign(ch: Char): Boolean {

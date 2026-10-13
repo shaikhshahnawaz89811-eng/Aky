@@ -193,4 +193,32 @@ class MemoryBookTest {
         // an old fact is never removed by "pichhle N minute bhool jao"
         assertEquals(0, MemoryBook.forgetSince(items, t0).second)
     }
+
+    // ---------- T2: the language choice ----------
+
+    @Test fun theLanguageChoiceIsReadFromTheBookAndIsNotListedAsAFact() {
+        val items = listOf(
+            item("name", "The user's name is Rahul."),
+            item(LocalMemory.KIND_REPLY_LANGUAGE, LocalMemory.FACT_HINGLISH)
+        )
+        assertEquals("hinglish", MemoryBook.replyLanguage(items, t0 + 1))
+        val facts = MemoryBook.promptFacts(items, "hello", t0 + 1)
+        assertEquals(1, facts.size)
+        assertEquals("name", facts[0].kind)
+        assertFalse(MemoryBook.promptBlock(items, "hello", t0 + 1).contains("Hinglish"))
+        assertNull(MemoryBook.replyLanguage(emptyList(), t0))
+    }
+
+    @Test fun aNewLanguageChoiceReplacesTheOldOne() {
+        val old = MemoryBook.make(LocalMemory.KIND_REPLY_LANGUAGE, LocalMemory.FACT_HINGLISH, MemoryBook.LONG, MemoryBook.SRC_AUTO, 5L)
+        val fresh = MemoryBook.make(LocalMemory.KIND_REPLY_LANGUAGE, LocalMemory.FACT_ENGLISH, MemoryBook.LONG, MemoryBook.SRC_AUTO, 6L)
+        val book = MemoryBook.add(listOf(old), listOf(fresh), 10L)
+        assertEquals(1, book.size)
+        assertEquals("english", MemoryBook.replyLanguage(book, 10L))
+    }
+
+    @Test fun anEditedLanguageSentenceIsStillUnderstood() {
+        val edited = item(LocalMemory.KIND_REPLY_LANGUAGE, "reply in English please")
+        assertEquals("english", MemoryBook.replyLanguage(listOf(edited), t0 + 1))
+    }
 }

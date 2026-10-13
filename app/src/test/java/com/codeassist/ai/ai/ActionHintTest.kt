@@ -1,5 +1,6 @@
 package com.codeassist.ai.ai
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,5 +41,36 @@ class ActionHintTest {
     @Test fun longOrMultilineMessagesDoNotMatch() {
         assertFalse(ActionHint.looksLikeAction("alarm\nlaga do"))
         assertFalse(ActionHint.looksLikeAction("alarm " + "word ".repeat(40)))
+    }
+
+    // ---------- test chat 13 Oct 2026: "WhatsApp on karo" got no tools ----------
+
+    private val installed = { listOf("whatsapp", "youtube", "google maps", "hdfc bank") }
+
+    @Test fun appOnKaroNeedsAnAppName() {
+        assertTrue(ActionHint.looksLikeAction("WhatsApp on karo", installed))
+        assertTrue(ActionHint.looksLikeAction("youtube chalu kar do", installed))
+        assertTrue(ActionHint.looksLikeAction("mera whatsapp on kar do please", installed))
+        assertTrue(ActionHint.looksLikeAction("google maps on karo", installed))
+        assertTrue(ActionHint.looksLikeAction("hdfc on karo", installed))
+        assertTrue(ActionHint.looksLikeAction("WhatsApp on karo")) // no installed list: the well known names still count
+    }
+
+    @Test fun onAndChaluAloneAreNotActions() {
+        assertFalse(ActionHint.looksLikeAction("wifi on karo", installed))
+        assertFalse(ActionHint.looksLikeAction("ek kahani on karo", installed))
+        assertFalse(ActionHint.looksLikeAction("on karo", installed))
+        assertFalse(ActionHint.looksLikeAction("tell me about movies based on true stories", installed))
+        assertFalse(ActionHint.looksLikeAction("ye gaana on hai", installed))
+    }
+
+    @Test fun theAppListIsOnlyAskedForForTheAppOnShape() {
+        var asked = 0
+        val spy = { asked++; listOf("whatsapp") }
+        ActionHint.looksLikeAction("mujhe ek kahani sunao", spy)
+        ActionHint.looksLikeAction("torch on karo", spy) // an action word decides first
+        assertEquals(0, asked)
+        ActionHint.looksLikeAction("hdfc on karo", spy)
+        assertEquals(1, asked)
     }
 }

@@ -27,10 +27,10 @@ object Prompts {
             "`after` out. If the earlier call fails, the later one is skipped."
 
     /**
-     * System prompt for the on-device 1.5B model: short, plain English instructions (a small model follows these
-     * better than a long Hinglish text). The language rule is spelled out with an example; for a Hinglish message the
-     * prompt also carries two example exchanges (see [HinglishGuide.fewShot]). What the user told the app about
-     * themselves is added by [systemLocal]. A system prompt the user edited in Settings is used instead.
+     * System prompt for the on-device model (Gemma 4 E2B since the engine swap; it was written for a 1.5B model): short, plain
+     * English instructions. The language rule is spelled out with an example. What the user told the app about themselves, what
+     * the brain really is ([stackLine]) and the user's language choice ([languageLine]) are added by [systemLocal]. A system
+     * prompt the user edited in Settings is used instead of this text.
      */
     const val LOCAL_SYSTEM =
         "You are CodeAssist AI, a friendly assistant inside an Android app, talking to an Indian user. " +
@@ -49,6 +49,48 @@ object Prompts {
             "\"Pune ka mausam batao\" -> weather_now {city Pune}. " +
             "\"pehle torch on karo phir 5 minute ka timer\" -> torch_set {on true}, timer_set {seconds 300, after t1}."
 
+    /**
+     * T2 (test chat 13 Oct 2026): the model said wrong things about itself. These are facts about the app, so they go into the
+     * prompt of both brains, also when the user wrote a system prompt of their own. [brain] is "gemini" or "local".
+     */
+    fun stackLine(brain: String, geminiModel: String): String {
+        val local = "Gemma 4 E2B (Google's open model, about 2.6 GB) running offline on this phone with Google's LiteRT-LM runtime"
+        val head = "App facts (true; use them when asked what you are or what you run on): you are CodeAssist AI, an Android app. "
+        return if (brain == "gemini") {
+            val id = geminiModel.trim()
+            head + "Your brain right now is Google Gemini" + (if (id.isEmpty()) "" else " (model $id)") +
+                ", reached over the internet through the Gemini API. The app also has an offline brain: $local. " +
+                "Do not name any other model as yours."
+        } else {
+            head + "Your brain right now is $local. The user can also switch the app to a Gemini model over the internet. " +
+                "Do not name any other model as yours."
+        }
+    }
+
+    /**
+     * The user's standing language choice ("Hinglish me batao", kept as reply_language), or "" when there is none. The example
+     * has no verb that changes with gender, because the Female voice only rewrites the base prompt, not this line.
+     */
+    fun languageLine(lang: String?): String = when (lang) {
+        LocalMemory.LANG_HINGLISH ->
+            "LANGUAGE (the user's own choice, always): reply in simple Roman Hinglish (Hindi written in English letters), " +
+                "even when the user writes in English. Code and technical terms stay in English. " +
+                "Exception: if this message asks for a translation or for another language, follow that request. " +
+                "Example: \"Ji, bilkul. Batao, kya jaanna hai?\""
+        LocalMemory.LANG_ENGLISH ->
+            "LANGUAGE (the user's own choice, always): reply in English, even when the user writes Hinglish. " +
+                "Exception: if this message asks for a translation or for another language, follow that request."
+        else -> ""
+    }
+
+    /** The app facts and the language choice; only for the real chat, never for the eval ([personal] = false). */
+    private fun appendBrainFacts(sb: StringBuilder, brain: String) {
+        val model = if (brain == "gemini") Store.geminiModel.ifBlank { GeminiClient.FALLBACK_MODEL } else ""
+        sb.append("\n").append(stackLine(brain, model))
+        val lang = languageLine(MemoryStore.replyLanguage())
+        if (lang.isNotEmpty()) sb.append("\n").append(lang)
+    }
+
     /** Used for the one retry after a rejected reply: as little text as possible for the model to trip over. */
     const val LOCAL_MINIMAL_SYSTEM =
         "You are a helpful assistant. Answer briefly in the user's language. " +
@@ -64,6 +106,7 @@ object Prompts {
      */
     fun system(viaVoice: Boolean, userText: String = "", personal: Boolean = true): String {
         val sb = StringBuilder(Store.systemPrompt.trim())
+        if (personal) appendBrainFacts(sb, "gemini")
         if (personal && Store.memoryToCloud) {
             val facts = MemoryStore.promptBlock(userText)
             if (facts.isNotEmpty()) sb.append("\n").append(facts)
@@ -85,6 +128,7 @@ object Prompts {
         val base = if (custom) Store.systemPrompt.trim() else LOCAL_SYSTEM
         // the example sentence of the default prompt is masculine; for the Female voice it is turned feminine
         val sb = StringBuilder(if (personal && !custom) Persona.fit(base, Store.personaGender) else base)
+        if (personal) appendBrainFacts(sb, "local")
         val facts = if (personal) MemoryStore.promptBlock(userText) else ""
         if (facts.isNotEmpty()) sb.append("\n").append(facts)
         if (personal) {

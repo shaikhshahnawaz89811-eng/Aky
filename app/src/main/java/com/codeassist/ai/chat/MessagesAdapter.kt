@@ -29,6 +29,7 @@ import com.codeassist.ai.data.Role
 import com.codeassist.ai.data.Store
 import com.codeassist.ai.ui.AttachmentHelper
 import com.codeassist.ai.ui.ImageLoader
+import com.codeassist.ai.ui.SketchView
 
 class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     private val items = mutableListOf<Message>()
@@ -235,6 +236,7 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private val confirmRow: View = view.findViewById(R.id.confirmRow)
         private val confirmYes: TextView = view.findViewById(R.id.btnConfirmYes)
         private val confirmNo: TextView = view.findViewById(R.id.btnConfirmNo)
+        private val sketchView: SketchView = view.findViewById(R.id.sketchView)
         private var pulse: ObjectAnimator? = null
 
         fun bind(message: Message, onUndo: ((Message) -> Unit)?, onConfirm: ((Message, Boolean) -> Unit)?) {
@@ -291,6 +293,15 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
             )
             text.setTextIsSelectable(true)
             applyTextSize(text)
+
+            // T4: a drawing from the sketch path sits under the text
+            val drawing = if (busy || error) null else message.sketch
+            if (drawing.isNullOrBlank()) {
+                sketchView.visibility = View.GONE
+            } else {
+                sketchView.visibility = View.VISIBLE
+                sketchView.setSketch(drawing)
+            }
 
             val caption: String? = when {
                 busy -> null

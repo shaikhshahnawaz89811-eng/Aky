@@ -170,4 +170,35 @@ class MemoryCommandsTest {
         assertEquals(1, out!!.updated!!.size)
         assertTrue(out.reply.startsWith("Theek hai, yaad rakh liya:"))
     }
+
+    // ---------- "mera naam kya hai" (test chat 13 Oct 2026) ----------
+
+    @Test fun theStoredNameIsReadOut() {
+        val r = run("mera naam kya hai", listOf(item("name", "The user's name is Shahnawaz.", now)))
+        assertEquals("ask_name", r.event)
+        assertEquals("Aapka naam Shahnawaz hai.", r.reply)
+        assertNull(r.items)
+    }
+
+    @Test fun withNoNameStoredTheUserIsAskedAndNothingIsSaved() {
+        val r = run("kya tum mera naam jante ho")
+        assertEquals("ask_name_unknown", r.event)
+        assertEquals(LocalMemory.NAME_UNKNOWN_REPLY, r.reply)
+        assertNull(r.items)
+    }
+
+    @Test fun anOldWrongNameIsIgnored() {
+        val r = run("Mera naam jante hoo", listOf(item("name", "The user's name is Jante.", now)))
+        assertEquals("ask_name_unknown", r.event)
+    }
+
+    @Test fun aNoteThatStatesTheNameIsUsed() {
+        val r = run("mera naam kya hai", listOf(item("note:mera naam rahul hai", "mera naam Rahul hai", now)))
+        assertEquals("Aapka naam Rahul hai.", r.reply)
+    }
+
+    @Test fun aStatementOfTheNameIsNotAQuestion() {
+        assertNull(MemoryCommands.handle("mera naam shahnawaz hai", emptyList(), now, false))
+        assertNull(MemoryCommands.handle("Nahin mera naam shahnawaz", emptyList(), now, false))
+    }
 }
