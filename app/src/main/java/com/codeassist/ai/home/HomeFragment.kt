@@ -37,15 +37,19 @@ import com.codeassist.ai.ai.BrainStatus
 import com.codeassist.ai.ai.ChatRunner
 import com.codeassist.ai.ai.Modules
 import com.codeassist.ai.ai.PlanExecutor
+import com.codeassist.ai.ai.Sketch
+import com.codeassist.ai.ai.SketchDesigns
 import com.codeassist.ai.chat.MessagesAdapter
 import com.codeassist.ai.data.Attachment
 import com.codeassist.ai.data.ChatMeta
 import com.codeassist.ai.data.Message
 import com.codeassist.ai.data.Role
 import com.codeassist.ai.data.Store
+import com.codeassist.ai.sketch.SketchStudioActivity
 import com.codeassist.ai.ui.AttachSheet
 import com.codeassist.ai.ui.AttachmentHelper
 import com.codeassist.ai.ui.ComposerController
+import com.codeassist.ai.ui.SketchFiles
 import com.codeassist.ai.ui.ZoomImageView
 import com.codeassist.ai.voice.MicButtonView
 import com.codeassist.ai.voice.VoiceController
@@ -529,18 +533,50 @@ class HomeFragment : Fragment() {
         if (message.role == Role.USER) actions.add(2, "Edit")
         actions.add("Delete")
         if (message.role == Role.AI) actions.add("Regenerate")
+        // Sketch Studio: a drawing can be copied as SVG text, shared as a real .svg / .png file (stage 2) or opened in the studio screen
+        if (message.role == Role.AI && !message.sketch.isNullOrBlank()) {
+            actions.add(3, "Open in Studio")
+            actions.add(4, "Share SVG file")
+            actions.add(5, "Share PNG")
+            actions.add(6, "Copy SVG")
+        }
         AlertDialog.Builder(requireContext())
             .setItems(actions.toTypedArray()) { _, which ->
                 when (actions[which]) {
                     "Copy" -> copyText(message.text)
                     "Select text" -> if (this::adapter.isInitialized) adapter.selectText(message.id)
                     "Share" -> shareText(message.text)
+                    "Copy SVG" -> sketchSvg(message)?.let { copyText(it) }
+                    "Share SVG file" -> sketchDrawing(message)?.let { SketchFiles.shareSvg(requireContext(), it) }
+                    "Share PNG" -> sketchDrawing(message)?.let { SketchFiles.sharePng(requireContext(), it) }
+                    "Open in Studio" -> openInStudio(message)
                     "Edit" -> editMessage(chatId, message)
                     "Delete" -> deleteMessage(chatId, message)
                     "Regenerate" -> regenerate(chatId, message)
                 }
             }
             .show()
+    }
+
+    /** The drawing of [message], or null (with a short note) when the stored drawing cannot be read. */
+    private fun sketchDrawing(message: Message): Sketch.Drawing? {
+        val drawing = Sketch.fromJson(message.sketch)
+        if (drawing == null) Toast.makeText(requireContext(), "Is chitra ko padh nahi paya.", Toast.LENGTH_SHORT).show()
+        return drawing
+    }
+
+    /** The drawing of [message] as SVG text, or null. */
+    private fun sketchSvg(message: Message): String? = sketchDrawing(message)?.let { Sketch.toSvg(it) }
+
+    /** Keeps the drawing as a studio design (the same drawing is not saved twice) and opens the studio screen on it. */
+    private fun openInStudio(message: Message) {
+        if (sketchDrawing(message) == null) return
+        val id = SketchStudioActivity.saveFromChat(message.sketch)
+        if (id == null) {
+            Toast.makeText(requireContext(), "Studio me jagah nahi (limit " + SketchDesigns.MAX_DESIGNS + " design). Pehle kuch delete karo.", Toast.LENGTH_LONG).show()
+            return
+        }
+        startActivity(SketchStudioActivity.intent(requireContext(), id))
     }
 
     private fun copyText(text: String) {

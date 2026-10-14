@@ -56,6 +56,24 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- Sketch Studio stage 2: the designs screen (list + editor). It handles rotation itself so a running model call is not lost. -->
+        <activity
+            android:name=".sketch.SketchStudioActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Sketch Studio stage 2: share a drawing as a real .svg / .png file (only cache/sketch_export, see res/xml/file_paths.xml) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <service
             android:name=".service.AssistantService"
             android:exported="false"

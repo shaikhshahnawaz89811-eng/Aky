@@ -267,4 +267,6 @@ Source: `CodeAssistAI_Test_Chat_Report.pdf`. Limits and the phone checks are at 
 
 - **Plan builder (T3)**: phone brain par "ek prompt do, poora plan, dusra AI coding kar de" jaisi maang par app khud 5 phase wala plan banati hai: chat ke tumhare lines seedha plan me, har hissa alag Gemma call me, jaanch ke saath. Switch: Settings > Voice and AI. Detail BUILD_NOTES me "Phase T3".
 - **Sketch (T4)**: "sketch banao: ghar", "login ka flowchart banao", "chat screen ka wireframe banao". Model JSON likhta hai, app chitra banati hai (training nahi). Detail BUILD_NOTES me "Phase T4".
+  **Studio stage 1** (kabhi compile nahi hua): detail wale chitra (path / poly / ellipse, rang, background), pichhle chitra me badlav ("background dark kar do"), SVG copy / share. Poori list `SKETCH_STUDIO.md` me.
+  **Studio stage 2** (kabhi compile nahi hua): drawer me "Sketch Studio" screen (designs ki list, zoom / pan, undo / redo, naya / badlo, rename / duplicate / delete), asli `.svg` aur `.png` file share, chat ke menu me "Open in Studio". HTML / JS, 3D, layers, variations abhi nahi bane (stage 3).
 - Dono sirf phone brain par. Compile / test abhi baaki (PLAN.md, Phase 0).

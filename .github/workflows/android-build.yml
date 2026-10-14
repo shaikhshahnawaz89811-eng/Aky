@@ -39,52 +39,84 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      # Optional offline-speech engine. sherpa-onnx is not on Maven, so its AAR is fetched from the GitHub release.
-      # If the download fails the build still succeeds: the app just reports the offline engine as "not installed".
-      - name: Fetch sherpa-onnx AAR (optional)
+      # RULE FOR EVERY STEP BELOW: nothing is swallowed and nothing is skipped because an earlier step failed.
+      #  - no "|| true", no "continue-on-error": a failing step makes the whole job red
+      #  - `if: ${{ !cancelled() }}` runs the step even after an earlier failure, so all failures show in ONE run
+      #  - an upload step only waits for its own build step (nothing to upload if that build failed)
+
+      # sherpa-onnx is not on Maven, so its AAR is fetched from the GitHub release.
+      # If the download fails the job FAILS (before: only a warning, and offline speech silently stayed disabled).
+      - name: Fetch sherpa-onnx AAR
+        id: aar
         run: |
           mkdir -p app/libs
           if ls app/libs/*.aar >/dev/null 2>&1; then
             echo "AAR already in app/libs, skipping download"
           else
             VER=1.12.39
-            curl -fL --retry 3 -o "app/libs/sherpa-onnx-$VER.aar" \
-              "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$VER/sherpa-onnx-$VER.aar" \
-              || { echo "::warning::sherpa-onnx AAR download failed; offline speech engine stays disabled"; rm -f "app/libs/sherpa-onnx-$VER.aar"; }
+            if ! curl -fL --retry 3 -o "app/libs/sherpa-onnx-$VER.aar" \
+                "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$VER/sherpa-onnx-$VER.aar"; then
+              rm -f "app/libs/sherpa-onnx-$VER.aar"
+              echo "::error::sherpa-onnx AAR download failed - the offline speech engine would be silently disabled"
+              exit 1
+            fi
           fi
 
-      - name: Run lint checks
-        run: ./gradlew lintDebug --continue || true
-
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        id: build_debug
+        if: ${{ !cancelled() }}
+        run: ./gradlew assembleDebug --continue
 
       - name: Build Release APK (unsigned)
-        run: ./gradlew assembleRelease
+        id: build_release
+        if: ${{ !cancelled() }}
+        run: ./gradlew assembleRelease --continue
 
       - name: Upload Debug APK
+        if: ${{ !cancelled() && steps.build_debug.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: CodeAssistAI-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload Release APK
+        if: ${{ !cancelled() && steps.build_release.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: CodeAssistAI-release-unsigned-apk
           path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
           retention-days: 30
 
-      # Unit tests run after the APKs are uploaded, so a failing test never costs you the APK.
+      # Unit tests and lint run after the APKs are uploaded, so a failing test or lint error never costs you the APK.
       - name: Run unit tests
+        id: unit_tests
+        if: ${{ !cancelled() }}
         run: ./gradlew testDebugUnitTest --continue
 
-      - name: Upload unit test report
-        if: always()
+      # lintDebug used to run first with "|| true" (and abortOnError = false): ~7 minutes of work whose result nobody saw.
+      - name: Run lint checks
+        id: lint
+        if: ${{ !cancelled() }}
+        run: ./gradlew lintDebug --continue
+
+      # Lists EVERY failed test and lint error (log + run summary + annotations). Also fails on 0 tests or any skipped test.
+      - name: Failure summary (tests + lint)
+        id: summary
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci_report.py
+
+      - name: Upload test + lint reports
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: unit-test-report
-          path: app/build/reports/tests/testDebugUnitTest/
-          if-no-files-found: ignore
+          name: ci-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+          if-no-files-found: error
           retention-days: 14

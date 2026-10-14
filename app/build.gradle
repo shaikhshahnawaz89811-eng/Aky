@@ -45,9 +45,12 @@ android {
     }
 
     lint {
-        // CI runs lintDebug as its own non-blocking step; lint findings must not stop assembleRelease.
+        // CI runs lintDebug as its own step and every lint error must show up (no abortOnError = false, no "|| true").
+        // checkReleaseBuilds stays off only so assembleRelease does not run a second lint pass over the same code.
         checkReleaseBuilds = false
-        abortOnError = false
+        abortOnError = true
+        htmlReport = true
+        xmlReport = true
     }
 }
 

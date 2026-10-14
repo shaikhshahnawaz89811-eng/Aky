@@ -229,7 +229,9 @@ object ConvKpi {
         sb.append("\nSketch (T4)\n")
         sb.append("  sketch maange: ").append(get("sk_runs")).append(" · bane: ").append(get("sk_ok"))
             .append(" · nahi bane: ").append(get("sk_failed")).append(" · dobara likhwaya: ").append(get("sk_retry"))
-            .append(" · \"skills\" par sawaal: ").append(get("sk_clarify")).append("\n")
+            .append(" · \"skills\" par sawaal: ").append(get("sk_clarify"))
+            .append(" · badlav (edit) maange: ").append(get("sk_edit")).append("\n")
+        sb.append("  Studio screen se (stage 2) maange: ").append(get("sk_studio")).append("\n")
 
         sb.append("\nTask engine (Phase 3)\n")
         sb.append("  plans: ").append(get("plan_runs")).append(" · 2+ kaam wale: ").append(get("plan_multi"))

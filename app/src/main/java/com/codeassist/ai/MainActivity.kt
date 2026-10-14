@@ -21,6 +21,7 @@ import com.codeassist.ai.home.HomeFragment
 import com.codeassist.ai.projects.ProjectsFragment
 import com.codeassist.ai.settings.SettingsFragment
 import com.codeassist.ai.service.HandsFree
+import com.codeassist.ai.sketch.SketchStudioActivity
 import com.codeassist.ai.service.HealthCheck
 import com.codeassist.ai.settings.BatteryDialogs
 import com.codeassist.ai.settings.MemoryFragment
@@ -74,11 +75,16 @@ class MainActivity : AppCompatActivity() {
         styleRow(findViewById(R.id.rowNewChat), R.drawable.ic_edit, "New chat", accent = true)
         styleRow(findViewById(R.id.rowChats), R.drawable.ic_chat, "Chats")
         styleRow(findViewById(R.id.rowProjects), R.drawable.ic_folder, "Projects")
+        styleRow(findViewById(R.id.rowStudio), R.drawable.ic_palette, "Sketch Studio")
         styleRow(findViewById(R.id.rowSettings), R.drawable.ic_settings, "Settings")
 
         findViewById<View>(R.id.rowNewChat).setOnClickListener { newChat() }
         findViewById<View>(R.id.rowChats).setOnClickListener { openTab { ChatsFragment() } }
         findViewById<View>(R.id.rowProjects).setOnClickListener { openTab { ProjectsFragment() } }
+        findViewById<View>(R.id.rowStudio).setOnClickListener {
+            drawer.closeDrawer(GravityCompat.START)
+            startActivity(SketchStudioActivity.intent(this))
+        }
         findViewById<View>(R.id.rowSettings).setOnClickListener { openTab { SettingsFragment() } }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

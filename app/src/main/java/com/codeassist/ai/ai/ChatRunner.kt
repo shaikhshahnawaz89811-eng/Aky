@@ -101,8 +101,14 @@ object ChatRunner {
                 null
             }
         // T4: "ek sketch banao: ghar" on the phone brain: Gemma writes one small JSON, the app checks it and draws it (Sketch)
-        val sketchReq = tool == null && planSrc == null && !viaVoice && provider == "local" &&
+        val sketchNew = tool == null && planSrc == null && !viaVoice && provider == "local" &&
             latest.attachments.isEmpty() && SketchIntent.isRequest(latest.text)
+        // Sketch Studio stage 1: a short change request right after a drawing ("background dark kar do") edits THAT drawing
+        val lastReply = history.lastOrNull()
+        val prevSketch: String? = if (lastReply != null && lastReply.role == Role.AI) lastReply.sketch else null
+        val sketchEdit = !sketchNew && tool == null && planSrc == null && !viaVoice && provider == "local" &&
+            latest.attachments.isEmpty() && SketchIntent.isRevision(latest.text, !prevSketch.isNullOrBlank())
+        val sketchReq = sketchNew || sketchEdit
         val heavy = tool == null && planSrc == null && !sketchReq && FallbackPolicy.escalateHeavyPlan(
             latest.text, provider, !Store.geminiKey.isNullOrBlank(), Store.heavyPlanToGemini
         )
@@ -133,7 +139,7 @@ object ChatRunner {
                         )
                     }
                     planSrc != null -> runPlanBuild(app, run, history, latest, planSrc)
-                    sketchReq -> runSketch(run, latest)
+                    sketchReq -> runSketch(run, latest, if (sketchEdit) prevSketch else null)
                     heavy -> runHeavyPlan(app, run, history, latest)
                     provider == "gemini" -> runGeminiWithFallback(app, run, history, latest)
                     else -> runLocal(app, run, history, latest)
@@ -576,15 +582,28 @@ object ChatRunner {
      * T4: one Gemma call that must answer with ONE small JSON object ([Sketch.systemPrompt]); a wrong answer gets one retry with
      * the reason. The checked drawing is stored in [Message.sketch] and drawn by SketchView. Offline only.
      */
-    private suspend fun runSketch(run: Run, latest: Message): Message {
+    private suspend fun runSketch(run: Run, latest: Message, previous: String? = null): Message {
         ConvKpi.inc("sk_runs")
         run.route = "sketch"
+        if (previous != null) {
+            ConvKpi.inc("sk_edit")
+            if (previous.length > Sketch.MAX_REVISE_JSON) {
+                // the phone model cannot take a drawing this big back as input: say so instead of cutting it and breaking it
+                ConvKpi.inc("sk_failed")
+                run.detail = "sketch edit refused: drawing too big"
+                return Message(
+                    id = run.messageId, role = Role.AI, engine = "local", note = "Sketch",
+                    text = "Ye chitra phone model ke liye edit karne ko bahut bada hai (" + previous.length + " akshar, limit " +
+                        Sketch.MAX_REVISE_JSON + "). Purana chitra waisa hi hai. Naya, halka sketch banwao ya kam cheezein maango."
+                )
+            }
+        }
         prepareLocal(run)
-        run.label = "Sketch bana raha hoon"
+        run.label = if (previous != null) "Sketch badal raha hoon" else "Sketch bana raha hoon"
         postProgress(run)
         val lang = PlanBuilder.language(latest.text, MemoryStore.replyLanguage())
-        val system = Sketch.systemPrompt(lang)
-        val ask = Sketch.userPrompt(latest.text)
+        val system = if (previous != null) Sketch.reviseSystemPrompt(lang) else Sketch.systemPrompt(lang)
+        val ask = if (previous != null) Sketch.revisePrompt(previous, latest.text) else Sketch.userPrompt(latest.text)
         val first = LocalLlm.chat(system, emptyList(), ask, emptyList(), { run.cancelled }) { }
         var millis = first.millis
         var parsed: Sketch.Parsed = Sketch.parse(first.text)
@@ -600,7 +619,8 @@ object ChatRunner {
             parsed = Sketch.parse(again.text)
         }
         val where = if (LocalLlm.backendName.isEmpty()) "" else " · " + LocalLlm.backendName.uppercase(Locale.US)
-        val caption = "Sketch · $LOCAL_NAME$where · ${millis / 1000}s" + (if (retried) " · dobara" else "")
+        val caption = (if (previous != null) "Sketch badla · " else "Sketch · ") + "$LOCAL_NAME$where · ${millis / 1000}s" +
+            (if (retried) " · dobara" else "")
         val result = parsed
         return when (result) {
             is Sketch.Parsed.Ok -> {
@@ -617,8 +637,12 @@ object ChatRunner {
                 run.detail = "sketch refused: " + result.reason
                 Message(
                     id = run.messageId, role = Role.AI, engine = "local", note = caption,
-                    text = "Sketch nahi ban paya (" + result.reason + "). Thoda saaf likho, jaise: " +
-                        "\"sketch banao: ghar\" ya \"login ka flowchart banao\"."
+                    text = if (previous != null) {
+                        "Sketch badal nahi paya (" + result.reason + "). Purana chitra waisa hi hai; badlav thoda saaf likhkar dobara maango."
+                    } else {
+                        "Sketch nahi ban paya (" + result.reason + "). Thoda saaf likho, jaise: " +
+                            "\"sketch banao: ghar\" ya \"login ka flowchart banao\"."
+                    }
                 )
             }
         }

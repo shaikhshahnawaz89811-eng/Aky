@@ -86,6 +86,10 @@
                     layout="@layout/item_drawer_row" />
 
                 <include
+                    android:id="@+id/rowStudio"
+                    layout="@layout/item_drawer_row" />
+
+                <include
                     android:id="@+id/rowSettings"
                     layout="@layout/item_drawer_row" />
 

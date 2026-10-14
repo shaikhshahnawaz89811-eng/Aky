@@ -604,6 +604,18 @@ object Store {
         }
     }
 
+    // ---------- Sketch Studio designs (stage 2) ----------
+    /** The designs kept in Sketch Studio, in no particular order (use [com.codeassist.ai.ai.SketchDesigns.sorted] to show them). */
+    fun sketchDesigns(): MutableList<com.codeassist.ai.ai.SketchDesigns.Design> {
+        val type = object : TypeToken<MutableList<com.codeassist.ai.ai.SketchDesigns.Design>>() {}.type
+        return readList("sketch_designs", type)
+    }
+
+    fun saveSketchDesigns(list: List<com.codeassist.ai.ai.SketchDesigns.Design>) {
+        val type = object : TypeToken<MutableList<com.codeassist.ai.ai.SketchDesigns.Design>>() {}.type
+        writeList("sketch_designs", list, type)
+    }
+
     // ---------- Messages ----------
     fun messages(chatId: String): MutableList<Message> {
         val type = object : TypeToken<MutableList<Message>>() {}.type

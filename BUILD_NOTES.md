@@ -1329,3 +1329,67 @@ Naye tests: `SketchTest` (16).
 6. "sketch kya hota hai" -> normal jawab (drawing nahi).
 7. App band karke kholo: chitra chat me wapas dikhna chahiye (Message.sketch save hota hai).
 8. KPI > "Sketch (T4)": maange / bane / nahi bane / dobara likhwaya / "skills" par sawaal.
+
+# CI: koi fail ab chhupta ya skip nahi hota (14 Oct 2026)
+
+## Kya mila
+- 13 Oct ke log (`Build & test APK`) me **koi step laal nahi tha**: debug / release build, unit tests, lint sab SUCCESSFUL. Test ka koi `FAILED` nahi. Yani "bohut fail" log me dikh hi nahi sakte the, kyunki CI unhe chhupata tha.
+- Chhupne ke raaste: (1) `lintDebug ... || true` + `abortOnError = false`: lint ~7 minute chala, par uska natija na console me aaya na report upload hui. (2) sherpa AAR download fail hota to sirf warning, offline voice chupchap band. (3) Koi step fail hota to baaki sab steps skip: ek run me ek hi galti dikhti thi. (4) Test report upload me `if-no-files-found: ignore`. (5) Skipped test ko koi gina nahi jata tha.
+
+## Kya badla
+- `.github/workflows/android-build.yml`: `|| true` hata; AAR download fail = job laal; build / test / lint / summary / report steps `if: ${{ !cancelled() }}` se pichhle fail ke baad bhi chalte hain (job phir bhi laal rehta hai). APK upload tabhi jab uska build bana. Lint ab APK ke baad chalta hai.
+- `scripts/ci_report.py` (naya): har fail test aur har lint Error / Fatal ko log, run summary aur annotation me likhta hai. 0 test, koi skipped test, ya lint report gayab = fail.
+- `app/build.gradle`: lint `abortOnError = true` (html + xml report). `checkReleaseBuilds = false` isliye rakha ki `assembleRelease` dusri baar lint na chalaye.
+- Artifact `unit-test-report` ka naam ab `ci-reports` (tests + lint dono).
+
+## Seemayein
+- Ye badlav sandbox me chalaye nahi gaye (na Gradle, na GitHub). Sirf `ci_report.py` nakli XML par 4 haal me chala (sab theek / fail + skipped + lint / kuch bana hi nahi / 0 test) aur workflow ka YAML padha gaya.
+- **Pehle run laal ho sakta hai**: ab tak lint ke Error dikhte nahi the (jaise `ExpiredTargetSdkVersion`: `targetSdk 34`). Wo asli findings hain. `ci-reports` artifact bhejo, unhe theek karenge. Lint-baseline se chhupana nahi.
+- Compile warnings jo log me thin (fail nahi): `Proactive.kt:129-133` (Gson se null aa sakta hai, par `?:` ko compiler dead maanta hai), `VoiceAiFragment.kt:628, 834` (`key != null` fazool), 3 deprecated API. Chhue nahi.
+
+
+---
+
+# Sketch Studio, stage 1 (14 Oct 2026) - honest status
+
+Written in a sandbox with **no Kotlin compiler, no Gradle, no Android SDK and no network**: **never compiled, no unit test run,
+no lint run, never run on a phone.** Only checked: the `SvgPath` logic through a Python port against `SvgPathTest`'s expectations,
+exhaustive `when` over `Sketch.Kind`, and a hand review of the other new tests. Full audit, file list, pending work: `SKETCH_STUDIO.md`.
+
+| Part | Status |
+|---|---|
+| `SvgPath` (path data reader), new shapes path / poly / ellipse, styles, `bg`, `"v":2` limits, SVG export | Written, JVM tests written (`SvgPathTest`, `SketchStudioTest`), not run |
+| `SketchView` drawing of the new shapes | Written, needs device test |
+| Edit of the last drawing in chat (`ChatRunner.runSketch`, `SketchIntent.isRevision`) | Written, needs device test with Gemma |
+| Message menu: Copy SVG / Share SVG (text) | Written, needs device test |
+| Studio screen, HTML/JS sandbox, Three.js 3D, PNG / file export, undo / redo | **Not built** |
+| Existing CI failures | **Not investigated** (no log in the ZIP) |
+
+# Sketch Studio, stage 2 (14 Oct 2026) - honest status
+
+Same sandbox as stage 1: **no Kotlin compiler, no Gradle, no Android SDK, no network. Never compiled, no unit test run, no lint run,
+never run on a phone.** Checked: a Python port of the pure logic against every expectation of `SketchDesignsTest`, XML well-formedness,
+brace balance, existence of the drawables / colours used. Full file list and limits: `SKETCH_STUDIO.md` section 2b and "Known limits of stage 2".
+
+| Part | Status |
+|---|---|
+| `SketchDesigns`, `SketchHistory`, `ViewXform` (designs list, undo / redo, zoom maths, file names) | Written, `SketchDesignsTest` written, not run |
+| `SketchGen` (one Gemma call for the studio, new / edit) | Written, needs device test with Gemma |
+| `SketchStudioActivity` (list + editor, built in code), drawer row, "Open in Studio" in the chat menu | Written, needs device test |
+| `SketchView` touch (pinch / pan / double-tap), `renderBitmap` | Written, needs device test |
+| `.svg` / `.png` files through `FileProvider` (`SketchFiles`, `file_paths.xml`, manifest) | Written, needs device test |
+| HTML / JS sandbox, Three.js, layers / transforms / gradients, variations | **Not built** (stage 3) |
+| Existing CI failures | **Not investigated** (still no log) |
+
+## Phone check for stage 2 (about 10 minutes)
+
+1. Drawer > "Sketch Studio" opens an empty list with the "+ Naya design" button.
+2. "+ Naya design" opens an empty canvas. Type "ek ghar banao", tap **Naya**: a drawing appears, the title of the design becomes the drawing's title.
+3. Pinch to zoom, drag with one finger, double-tap: the picture zooms, moves and goes back. It never leaves the view.
+4. Type "background dark kar do", tap **Badlo**: the same drawing changes. **Undo** brings the old one back, **Redo** the new one. Close the screen, open the design again: the last state is there.
+5. Menu (three dots): **Share PNG** and **Share SVG file** open the share sheet with a real file; open the PNG in the gallery, it shows the whole picture.
+6. Menu: Naam badlo, Duplicate ("... copy"), Delete (asks first).
+7. In a chat, draw something ("sketch banao: ghar"), long-press the reply: **Open in Studio** opens it there (doing it twice does not make a second design).
+8. Tap **Stop** while the model works: the old drawing stays, the buttons come back.
+9. Rotate the phone while the model works: the screen does not restart and the answer still arrives.
+10. Send the result (and the CI log if the build fails): the next stage depends on it.
