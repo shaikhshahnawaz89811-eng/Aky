@@ -77,9 +77,52 @@ class SvgPathTest {
         assertTrue(bad("M10 10 L500 10").contains("between 0 and 100"))
     }
 
-    @Test fun arcsAreRefusedWithAHintToUseCurves() {
-        val r = bad("M10 10 A5 5 0 0 1 20 20")
-        assertTrue(r, r.contains("arc") && r.contains("C or Q"))
+    // Stage 3: arcs are read and become cubic curves (the old stage 1 test expected a refusal).
+    @Test fun arcsBecomeCubicCurvesThatEndOnTheEndPoint() {
+        val s = ok("M10 50 A20 20 0 0 1 50 50")
+        assertEquals("MCC", ops(s))
+        val last = s[s.size - 1].v
+        assertEquals(50f, last[4], 0.001f)
+        assertEquals(50f, last[5], 0.001f)
+    }
+
+    @Test fun aHalfCircleArcStaysOnTheCircle() {
+        // centre (30,50), radius 20, sweep flag 1 = clockwise on screen: the arc goes over the top (y < 50)
+        val s = ok("M10 50 A20 20 0 0 1 50 50")
+        for (seg in s.drop(1)) {
+            val ex = seg.v[4]
+            val ey = seg.v[5]
+            val dist = Math.hypot((ex - 30f).toDouble(), (ey - 50f).toDouble())
+            assertEquals(20.0, dist, 0.05)
+            assertTrue(ey <= 50.001f)
+        }
+        assertEquals(30f, s[1].v[4], 0.05f)
+        assertEquals(30f, s[1].v[5], 0.05f)
+    }
+
+    @Test fun sweepFlagZeroGoesTheOtherWay() {
+        val s = ok("M10 50 A20 20 0 0 0 50 50")
+        assertEquals(30f, s[1].v[4], 0.05f)
+        assertEquals(70f, s[1].v[5], 0.05f)
+    }
+
+    @Test fun relativeArcAndFlagsWithoutSeparators() {
+        val a = ok("M10 50 a20 20 0 0 1 40 0")
+        val b = ok("M10 50 a20 20 0 01 40 0")
+        assertEquals(a.size, b.size)
+        assertEquals(50f, a[a.size - 1].v[4], 0.001f)
+    }
+
+    @Test fun tooSmallRadiiAreScaledUpAndZeroRadiusIsALine() {
+        val grown = ok("M10 50 A1 1 0 0 1 50 50")
+        assertEquals("MCC", ops(grown))
+        assertEquals("ML", ops(ok("M10 10 A0 5 0 0 1 40 40")))
+    }
+
+    @Test fun anArcToTheSamePointDrawsNothingAndABadFlagIsRefused() {
+        assertEquals("ML", ops(ok("M10 10 A5 5 0 0 1 10 10 L30 30")))
+        assertTrue(bad("M10 10 A5 5 0 2 1 20 20").contains("flag"))
+        assertTrue(bad("M10 10 A5 5 0 0 1 200 20").contains("between 0 and 100"))
     }
 
     @Test fun otherBadPathsAreRefusedWithAReason() {

@@ -2,8 +2,10 @@ package com.codeassist.ai.chat
 
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.net.Uri
 import android.text.Selection
 import android.text.Spannable
 import android.text.SpannableStringBuilder
@@ -11,12 +13,14 @@ import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
@@ -27,6 +31,9 @@ import com.codeassist.ai.data.Attachment
 import com.codeassist.ai.data.Message
 import com.codeassist.ai.data.Role
 import com.codeassist.ai.data.Store
+import com.codeassist.ai.search.UrlTools
+import com.codeassist.ai.search.WebInfo
+import com.codeassist.ai.search.WebSource
 import com.codeassist.ai.ui.AttachmentHelper
 import com.codeassist.ai.ui.ImageLoader
 import com.codeassist.ai.ui.SketchView
@@ -237,6 +244,8 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private val confirmYes: TextView = view.findViewById(R.id.btnConfirmYes)
         private val confirmNo: TextView = view.findViewById(R.id.btnConfirmNo)
         private val sketchView: SketchView = view.findViewById(R.id.sketchView)
+        private val sourcesScroll: View = view.findViewById(R.id.sourcesScroll)
+        private val sourcesBox: LinearLayout = view.findViewById(R.id.sourcesBox)
         private var pulse: ObjectAnimator? = null
 
         fun bind(message: Message, onUndo: ((Message) -> Unit)?, onConfirm: ((Message, Boolean) -> Unit)?) {
@@ -303,6 +312,16 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
                 sketchView.setSketch(drawing)
             }
 
+            // Net search (stage S2): the sources of a web answer sit under the text as tappable chips (text has no links)
+            val webInfo = if (busy || error) null else WebInfo.parse(message.web)
+            sourcesBox.removeAllViews()
+            if (webInfo == null || webInfo.sources.isEmpty()) {
+                sourcesScroll.visibility = View.GONE
+            } else {
+                sourcesScroll.visibility = View.VISIBLE
+                addSourceChips(webInfo)
+            }
+
             val caption: String? = when {
                 busy -> null
                 error -> "Dobara try karne ke liye is message par dabake rakho, phir Regenerate."
@@ -311,6 +330,49 @@ class MessagesAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
             }
             note.visibility = if (caption.isNullOrBlank()) View.GONE else View.VISIBLE
             note.text = caption.orEmpty()
+        }
+
+        private fun addSourceChips(info: WebInfo) {
+            val ctx = sourcesBox.context
+            val d = ctx.resources.displayMetrics.density
+            val label = TextView(ctx).apply {
+                text = if (info.citedNone) "Mile sources:" else "Sources:"
+                setTextColor(ContextCompat.getColor(ctx, R.color.text3))
+                textSize = 12f
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, (8 * d).toInt(), 0)
+            }
+            sourcesBox.addView(label)
+            for (source in info.sources) {
+                val chip = TextView(ctx).apply {
+                    val date = if (source.date != null) " · " + source.date else ""
+                    text = "[" + source.id + "] " + source.domain + date + (if (source.old) " · purana" else "")
+                    contentDescription = source.title.ifBlank { source.domain }
+                    setTextColor(ContextCompat.getColor(ctx, R.color.accent))
+                    textSize = 12f
+                    maxLines = 1
+                    background = ContextCompat.getDrawable(ctx, R.drawable.chip_small)
+                    setPadding((10 * d).toInt(), (5 * d).toInt(), (12 * d).toInt(), (5 * d).toInt())
+                    setOnClickListener { openSource(it, source) }
+                }
+                val params = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = (6 * d).toInt() }
+                sourcesBox.addView(chip, params)
+            }
+        }
+
+        /** Only an https page is opened; the address comes from a real search result, never from the model's text. */
+        private fun openSource(v: View, source: WebSource) {
+            if (!UrlTools.isHttps(source.url)) {
+                Toast.makeText(v.context, "Ye link https nahi hai, isliye nahi khola.", Toast.LENGTH_SHORT).show()
+                return
+            }
+            try {
+                v.context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(source.url)))
+            } catch (_: Exception) {
+                Toast.makeText(v.context, "Browser nahi mila.", Toast.LENGTH_SHORT).show()
+            }
         }
 
         fun resumePulse() {

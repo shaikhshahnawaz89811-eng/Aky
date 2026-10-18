@@ -104,8 +104,8 @@ class SketchStudioTest {
     }
 
     @Test fun aBadPathIsRefusedWithThePathReason() {
-        val r = bad(doc("{\"t\":\"path\",\"d\":\"M10 10 A5 5 0 0 1 20 20\"}"))
-        assertTrue(r, r.startsWith("path:") && r.contains("arc"))
+        val r = bad(doc("{\"t\":\"path\",\"d\":\"M10 10 X5 5\"}"))
+        assertTrue(r, r.startsWith("path:") && r.contains("unknown"))
         assertTrue(bad(doc("{\"t\":\"path\"}")).contains("'d'"))
     }
 

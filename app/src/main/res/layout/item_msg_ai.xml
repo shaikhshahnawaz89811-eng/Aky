@@ -99,6 +99,24 @@
             android:layout_marginTop="8dp"
             android:visibility="gone" />
 
+        <!-- Net search (stage S2): the sources of a web answer, tappable, one line that scrolls sideways -->
+        <HorizontalScrollView
+            android:id="@+id/sourcesScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:overScrollMode="never"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/sourcesBox"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
         <LinearLayout
             android:id="@+id/confirmRow"
             android:layout_width="wrap_content"

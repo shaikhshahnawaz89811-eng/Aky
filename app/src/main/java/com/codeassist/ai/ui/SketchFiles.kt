@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import com.codeassist.ai.ai.HtmlSandbox
 import com.codeassist.ai.ai.Sketch
 import com.codeassist.ai.ai.SketchDesigns
 import java.io.File
@@ -57,7 +58,16 @@ object SketchFiles {
         return f
     }
 
-    /** Opens the share sheet for [file]; [mime] is "image/svg+xml" or "image/png". */
+    /** Writes a web design as a standalone .html file ([three] = text of three.min.js for a 3D page, or null). Stage 3. */
+    fun writeHtml(ctx: Context, title: String, html: String, three: String?): File {
+        val folder = dir(ctx)
+        sweep(folder)
+        val f = File(folder, SketchDesigns.fileName(title, "html"))
+        f.writeText(HtmlSandbox.forExport(html, three), Charsets.UTF_8)
+        return f
+    }
+
+    /** Opens the share sheet for [file]; [mime] is "image/svg+xml", "image/png" or "text/html". */
     fun share(ctx: Context, file: File, mime: String, subject: String) {
         val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", file)
         val send = Intent(Intent.ACTION_SEND).apply {
@@ -72,6 +82,9 @@ object SketchFiles {
 
     /** Write + share in one step; a failure becomes a short toast instead of a crash. */
     fun shareSvg(ctx: Context, d: Sketch.Drawing) = safely(ctx) { share(ctx, writeSvg(ctx, d), "image/svg+xml", d.title) }
+
+    fun shareHtml(ctx: Context, title: String, html: String, three: String?) =
+        safely(ctx) { share(ctx, writeHtml(ctx, title, html, three), "text/html", title) }
 
     fun sharePng(ctx: Context, d: Sketch.Drawing) = safely(ctx) { share(ctx, writePng(ctx, d), "image/png", d.title) }
 

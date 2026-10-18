@@ -1,5 +1,6 @@
 package com.codeassist.ai
 
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -26,6 +27,7 @@ import com.codeassist.ai.service.HealthCheck
 import com.codeassist.ai.settings.BatteryDialogs
 import com.codeassist.ai.settings.MemoryFragment
 import com.codeassist.ai.settings.VoiceAiFragment
+import com.codeassist.ai.voice.OfflineSttStore
 import com.codeassist.ai.voice.WakeCoordinator
 import com.codeassist.ai.workspace.WorkspaceActivity
 
@@ -144,6 +146,17 @@ class MainActivity : AppCompatActivity() {
         val askBattery = HealthCheck.onAppStart(this)
         HandsFree.rearmIfNeeded(this)
         if (askBattery) BatteryDialogs.showKilledPrompt(this)
+    }
+
+    /**
+     * Gemma, the offline recognizer and the wake engine live in this one process. When Android says memory is getting low,
+     * give back the offline recognizer's RAM first (about 150 to 600 MB; it loads again in about a second at the next mic
+     * use) so the process, and with it Gemma and the hands-free service, is not the one that gets killed.
+     */
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) OfflineSttStore.requestUnload()
     }
 
     override fun onStop() {

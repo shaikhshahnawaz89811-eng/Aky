@@ -51,7 +51,8 @@ Report: `CodeAssistAI_Test_Chat_Report.pdf`. Galti ke number report ke hain.
 | **T3 (ho gaya)** | Galti 4: plan / prompt builder: faislon ki list, fixed template (Goal, Stack, Screens, Phases, Pass shartein), section-wise call, completeness check ("as discussed" reject, saare phase maujood) | naya module + `ChatRunner` | Bhasha badal kar dobara maango: phase ginti same, "as discussed" kahin nahi |
 | **T4 (ho gaya)** | Galti 6: sketch (JSON: flowchart / wireframe / shapes + Canvas). Tool-prompt ka budget nahi chhua: sketch ka apna raasta, `ToolSpecs` me tool nahi (BUILD_NOTES me wajah) | `Sketch`, `SketchView`, `ChatRunner`, `MessagesAdapter` | "ek sketch banao: ghar" par drawing ya ek saaf sawaal |
 | **Sketch Studio stage 1 (likha, compile nahi hua)** | Detail chitra (path / poly / ellipse, rang, bg), pichhle chitra me badlav, SVG copy / share. Baaki (studio screen, HTML/JS sandbox, Three.js, PNG, undo) pending | `Sketch`, `SvgPath`, `SketchView`, `ChatRunner`, `HomeFragment` | `SKETCH_STUDIO.md` |
-| **Sketch Studio stage 2 (likha, compile nahi hua)** | Studio screen (designs list, zoom / pan, undo / redo, naya / badlo, rename / duplicate / delete), asli `.svg` / `.png` file share, chat menu me "Open in Studio". Baaki (HTML/JS sandbox, Three.js, layers / gradients, variations) stage 3 | `SketchDesigns`, `SketchGen`, `SketchStudioActivity`, `SketchFiles`, `SketchView`, `Store`, `HomeFragment` | `SKETCH_STUDIO.md`, BUILD_NOTES "Phone check for stage 2" |
+| **Sketch Studio stage 2 (likha, compile nahi hua)** | Studio screen (designs list, zoom / pan, undo / redo, naya / badlo, rename / duplicate / delete), asli `.svg` / `.png` file share, chat menu me "Open in Studio". Baaki stage 3 me bana (neeche) | `SketchDesigns`, `SketchGen`, `SketchStudioActivity`, `SketchFiles`, `SketchView`, `Store`, `HomeFragment` | `SKETCH_STUDIO.md`, BUILD_NOTES "Phone check for stage 2" |
+| **Sketch Studio stage 3 (likha, compile nahi hua)** | SVG arcs, gradient (`grad`, `bggrad`), move / ghumao / scale (`dx dy rot sc`), groups = layers + Layers panel (chhupao, aage-peechhe, copy, group, rename), **3 option** (ek baat ke 3 chitra), **web design** (HTML / CSS / JS ek band WebView me: internet nahi, app se koi bridge nahi, 4 second atakne par band, 10 minute baad band), 3D scene ka poora raasta **par `three.min.js` file ZIP me nahi** (download nahi ho saki: `assets/sketch/` me rakho, README wahin hai), `.html` file share | `Sketch`, `SvgPath`, `SketchView`, `SketchLayers`, `SketchVariants`, `SketchGen`, `HtmlSandbox`, `SketchWebHost`, `SketchDesigns`, `SketchStudioActivity`, `SketchFiles` | `SKETCH_STUDIO.md` section 2c, BUILD_NOTES "Phone check for stage 3" |
 
 T2 me jaan-boojh kar chhoda (BUILD_NOTES me poori list): "tum kis model par chalte ho" ka jawab sirf prompt se aata hai (app khud nahi deta); Gemini raste me bhasha retry nahi; Qwen ke bache hue switch (OCR, Qwen options) abhi screen par hain; offline modules aur Gemini client ka review abhi nahi kiya.
 
@@ -61,3 +62,13 @@ T2 me jaan-boojh kar chhoda (BUILD_NOTES me poori list): "tum kis model par chal
 - 8 GB RAM wale phone par local model dheela hai: har naya tool prompt me jodta hai. 3A me prompt +250 token gaya tha; 3B-2 me `weather_now` se block 2,994 se 3,319 characters hua (limit 3,400). Ab jagah khatam hai: agla tool lagane se pehle chhote model ka prompt dobara tay karna hoga.
 - T3 (paisa, band na hone wala kaam) kabhi app se nahi. Ye rule kisi phase me dheela nahi hoga.
 - Har phase ke baad ek chhoti phone-check list BUILD_NOTES me hogi (5 se 10 minute). Uska natija bhejoge to agla phase uske hisaab se badlega.
+
+## Net Search Agent (plan: Net_Search_Agent_Detailed_Research.pdf)
+| Stage | Kaam | Status |
+|---|---|---|
+| S0 | Compile gate (stage 3 + ctx fix + naye search files), litertlm version pin | **khula**: CI chalao |
+| S1 | Foundations (types, router, Tavily client, evidence, validator, budget, cache), koi behaviour change nahi | **likha, compile nahi hua** (`search/`, 119 naye tests, BUILD_NOTES "Net Search Agent, stage S1") |
+| S2 | Vertical slice: key card, `Message.web`, `ChatRunner` flag, `SearchRunner`, source chips | **likha, compile nahi hua** (general + news + value; 102 naye tests; BUILD_NOTES "Net Search Agent, stage S2"); phone par 10 sawaal ka check baaki |
+| S3 | Links + downloads (LinkResolver, DownloadGuard, GitHub API) | baaki |
+| S4 | Compare, follow-ups, multi-output | baaki |
+| S5 / S6 / S7 | Images / video / papers, site explore + report + fact-check, proxy (optional) | optional |

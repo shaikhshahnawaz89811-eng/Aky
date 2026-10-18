@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Handler
@@ -17,6 +18,7 @@ import com.codeassist.ai.MainActivity
 import com.codeassist.ai.R
 import com.codeassist.ai.ai.ConvKpi
 import com.codeassist.ai.data.Store
+import com.codeassist.ai.voice.OfflineSttStore
 import com.codeassist.ai.voice.VadGatedWakeWord
 import com.codeassist.ai.voice.WakeCoordinator
 import com.codeassist.ai.voice.WakeSupport
@@ -111,6 +113,13 @@ class AssistantService : Service(), WakeWordEngine.Listener {
             ConvKpi.inc("wake_fgs_denied")
             false
         }
+    }
+
+    /** Same rule as MainActivity: with the app closed, low memory frees the offline recognizer's RAM first. */
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) OfflineSttStore.requestUnload()
     }
 
     override fun onDestroy() {

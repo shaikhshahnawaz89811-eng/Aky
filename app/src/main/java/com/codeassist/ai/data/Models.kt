@@ -38,7 +38,9 @@ data class Message(
     /** JSON of a PendingAction: a T2 tool waiting for the user's "Haan" tap. Null once answered. */
     val pending: String? = null,
     /** T4: JSON of a drawing ([com.codeassist.ai.ai.Sketch.toJson]) shown under the text; null for every other reply. */
-    val sketch: String? = null
+    val sketch: String? = null,
+    /** Net search (stage S2): JSON of [com.codeassist.ai.search.WebInfo] (sources, credits, rounds) of a reply written from web results; null for every other reply. */
+    val web: String? = null
 )
 
 data class ChatMeta(

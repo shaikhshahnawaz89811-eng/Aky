@@ -142,6 +142,50 @@ object Store {
         get() = prefs.getBoolean("memory_to_cloud", false)
         set(v) = prefs.edit().putBoolean("memory_to_cloud", v).apply()
 
+    // ---------- Net search (stage S2) ----------
+
+    /** Tavily API key, stored encrypted with the Android Keystore AES-GCM key like the Gemini key. Only the question text is ever sent with it. */
+    var tavilyKey: String?
+        get() = prefs.getString("tavily_key_enc", null)?.let { com.codeassist.ai.ai.SecureStore.decrypt(it) }
+        set(v) {
+            val e = prefs.edit()
+            if (v.isNullOrBlank()) e.remove("tavily_key_enc")
+            else e.putString("tavily_key_enc", com.codeassist.ai.ai.SecureStore.encrypt(v.trim()))
+            e.apply()
+        }
+
+    /** True when a Tavily key is saved. Does not decrypt it (the gate asks this for every chat message). */
+    fun hasTavilyKey(): Boolean = prefs.contains("tavily_key_enc")
+
+    /** "none" | "saved" | "verified" | "invalid" */
+    var tavilyKeyStatus: String
+        get() = prefs.getString("tavily_key_status", "none") ?: "none"
+        set(v) = prefs.edit().putString("tavily_key_status", v).apply()
+
+    /** Master switch of the net search. On by default; with no key nothing is searched either way. */
+    var webSearch: Boolean
+        get() = prefs.getBoolean("web_search", true)
+        set(v) = prefs.edit().putBoolean("web_search", v).apply()
+
+    /** Most Tavily credits one day may use (audit section 7, "Credit burn"). */
+    var webDailyCap: Int
+        get() = prefs.getInt("web_daily_cap", com.codeassist.ai.search.SearchBudget.DEFAULT_DAILY_CAP).coerceIn(5, 200)
+        set(v) = prefs.edit().putInt("web_daily_cap", v.coerceIn(5, 200)).apply()
+
+    /** The day (yyyy-MM-dd) [webCreditUsed] belongs to. */
+    var webCreditDay: String
+        get() = prefs.getString("web_credit_day", "") ?: ""
+        set(v) = prefs.edit().putString("web_credit_day", v).apply()
+
+    var webCreditUsed: Int
+        get() = prefs.getInt("web_credit_used", 0)
+        set(v) = prefs.edit().putInt("web_credit_used", v).apply()
+
+    /** The month (yyyy-MM) in which the provider said its plan is used up, or "". */
+    var webExhaustedMonth: String
+        get() = prefs.getString("web_exhausted_month", "") ?: ""
+        set(v) = prefs.edit().putString("web_exhausted_month", v).apply()
+
     // ---------- Phase 4B: persona and proactive suggestions ----------
 
     var personaTone: String

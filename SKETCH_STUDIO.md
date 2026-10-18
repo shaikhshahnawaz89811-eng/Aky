@@ -1,6 +1,6 @@
-# Sketch Studio (upgrade of the T4 sketch feature) - audit, stages 1 and 2, what is still pending
+# Sketch Studio (upgrade of the T4 sketch feature) - audit, stages 1, 2 and 3, what is still pending
 
-Written 14 Oct 2026 (stage 1 and stage 2). **Nothing in these changes has been compiled or run on a device**: the sandbox it was written in has no
+Written 14 Oct 2026 (stage 1, stage 2 and stage 3). **Nothing in these changes has been compiled or run on a device**: the sandbox it was written in has no
 Kotlin compiler, no Gradle, no Android SDK and no network. What was actually checked is listed under "Checks done".
 Run the GitHub Actions build (it now shows every failing step in one run) and send the output if anything fails.
 
@@ -53,6 +53,42 @@ and **real .svg / .png files**. HTML / JS designs, Three.js, layers / transforms
 | `ai/ConvKpi.kt` | KPI line `sk_studio` (runs started from the studio screen). |
 | `test/.../SketchDesignsTest.kt` (new) | 26 JVM tests for the pure logic. |
 
+
+## 2c. Stage 3 - arcs, gradients, transforms, layers, 3 option, web designs (new, 14 Oct 2026)
+
+Scope: everything stage 2 left pending except the one thing that cannot be done here (the Three.js library file, see below).
+The pure parts have JVM tests; the screen, the renderer and the WebView need a CI run and a phone.
+
+| File | Change |
+|---|---|
+| `ai/SvgPath.kt` | Arcs `A` / `a` are read and converted to cubic curves (SVG spec F.6.5; at most 90 degrees per cubic; zero radius = line; too small radii are scaled up; flags may be written without separators). The path still ends up as M / L / C / Q / Z only. |
+| `ai/Sketch.kt` | New optional keys: `grad` (`"#RRGGBB #RRGGBB 90"` linear, angle in degrees, 0 = left to right, 90 = top to bottom; or `"... radial"`), `bggrad` (background), per-shape transform `dx`, `dy`, `rot`, `sc` (around the shape's centre), `hide`, and `{"t":"group","l":"name","shapes":[...]}` (one level; group takes transform keys and `op`). Group children count towards the shape limit (40 without `"v"`, else 120; 60 per group). `bounds()` / `pivot()` give the box used by gradients and transforms. SVG export writes `<defs>` gradients (user space, same box as the screen), `<g transform>` and `<g id="layer_...">`; hidden shapes are not written. `studioSystemPrompt` / `studioReviseSystemPrompt` add `ADVANCED_HELP`; the chat prompt is unchanged. Documents written before stage 3 read exactly as before. |
+| `ui/SketchView.kt` | Draws gradients (`LinearGradient` / `RadialGradient` over the same box as the SVG), transforms, groups (with opacity through `saveLayerAlpha`), hidden shapes, background gradient. |
+| `ai/SketchLayers.kt` (new) | Pure layer operations for the panel: rows (front first), hide / show, forward / back, remove (never the last one), duplicate (limits checked), rename group, put a shape into a group. Every operation returns a new drawing or null. |
+| `ai/SketchVariants.kt` (new) | The 3 layout ideas, the prompts, removal of identical answers. |
+| `ai/SketchGen.kt` | `run` now uses the studio prompts. New `runVariants` (three calls in a row, a failed one is skipped, each with its own retry) and `runPage` (web page / 3D scene, new or edit, same 3,500-character edit limit). Shared `prepare` and `attempt` helpers. |
+| `ai/HtmlSandbox.kt` (new) | Pure: `extract` / `check` (word list of ways out of a page, size limit 20,000), `wrap` (CSP meta first, optional Three.js library + WebGL probe), `forExport`, prompts, `titleOf`, `summary`. |
+| `ui/SketchWebHost.kt` (new) | The locked-down WebView (see "Safety of web designs") and `ThreeLib` (looks for `assets/sketch/three.min.js`). |
+| `ai/SketchDesigns.kt` | `Design` got `kind` and `html` (both nullable on purpose: Gson leaves a missing field null). Kinds: sketch, html, html3d. `update` writes the page for a web design, the JSON otherwise. |
+| `sketch/SketchStudioActivity.kt` | "+ Naya design" asks: Chitra / Web design / 3D scene. Drawings get **Layers** (panel) and **3 option** (three thumbnails, "Ye lo" keeps one, it goes into the undo history like any change). Web designs get Run / Stop, the WebView, the same Naya / Badlo / Undo / Redo, menu: Share HTML file, Copy HTML text. The page is auto-named from its `<title>`. |
+| `ui/SketchFiles.kt` | `writeHtml` / `shareHtml` (a standalone .html through the same FileProvider; a 3D page carries the library). |
+| `ai/ConvKpi.kt` | KPI line `sk_variants`, `sk_web`. |
+| `assets/sketch/README.txt` (new) | Where `three.min.js` goes and why it is not in the ZIP. |
+| `test/.../SketchStage3Test.kt` (new), `SvgPathTest`, `SketchStudioTest` | 60+ new JVM tests. Two stage 1 tests that expected arcs to be REFUSED were changed (arcs now work). |
+
+### Safety of web designs (read this before trusting it)
+A page the model writes is code that runs on the phone. Layers, strongest last:
+1. `HtmlSandbox.check` refuses network calls, other pages, storage, eval, forms, external files. A word list can always be got around: it only gives the model a clear reason to retry. **Do not rely on it.**
+2. A Content-Security-Policy meta tag in front of everything: `default-src 'none'`, inline script / style only, no network (`connect-src 'none'`), no frames, no forms.
+3. The WebView: JavaScript on, but **no bridge object at all** (no `addJavascriptInterface`), network loads blocked, every request except `data:` / `blob:` / `about:blank` answered with an empty 403, navigation and new windows refused, file and content access off, DOM storage off, geolocation / permission prompts / JavaScript dialogs refused.
+4. Time: a ping every 2 s, no answer for 4 s = the WebView is destroyed (an endless loop); every run stops by itself after 10 minutes; the page is frozen when the screen is left.
+What this does NOT stop: a page that uses a lot of CPU / battery / RAM until the limits above kick in, or a page that looks like something it is not (a fake login box). It cannot send anything out.
+
+### Three.js - what is and is not done
+- Done: the 3D design kind, the 3D prompt (THREE is already loaded, no imports), the library loader, the WebGL probe (the page writes one console line, the screen reads it), export with the library inside.
+- **Not done: the library itself.** `three.min.js` could not be downloaded here. Put it in `app/src/main/assets/sketch/` (see the README there). Until then "3D scene" says the file is missing and nothing is faked. Perspective pictures drawn with paths are still 2D and are not called 3D.
+- Not measured: WebGL on the target phone, RAM, frame rate, APK size (+0.6 MB).
+
 ## 3. Checks done (and not done)
 
 - Done: a Python port of the `SvgPath` logic was run against every expectation in `SvgPathTest` (all hold). The tests for
@@ -65,7 +101,13 @@ and **real .svg / .png files**. HTML / JS designs, Three.js, layers / transforms
   parentheses balance in every Kotlin file that was touched; every drawable / colour the studio screen uses exists in `res/`.
 - Stage 2, **not done**: compiling, running the JVM tests, lint, touch handling (pinch / pan), PNG rendering, the FileProvider
   share, the studio screen on a phone, a Gemma call from the studio screen. All of these need the CI run or a device.
-- **Existing CI failures: not investigated.** The ZIP contains the workflow but no CI log or `ci-reports` artifact, and the
+- Stage 3, done: a Python port of the arc maths (`SvgPath.arcSegs`) was run (half circle, sweep direction, scaled radii, ellipse with rotation); a Python port of
+  `HtmlSandbox.extract` / `check` / `wrap` / `titleOf` was run against the cases of `SketchStage3Test` (23 refused patterns, 7 harmless look-alikes, wrapping with and without
+  `<head>` / `<html>`, library escaping); brace / parenthesis balance of every touched Kotlin file; the other tests were checked by hand against the code.
+- Stage 3, **not done**: compiling, running any JVM test (the gradient, group, layer, design-kind and SVG tests included), lint, the renderer (gradients, `saveLayerAlpha`, rotation),
+  the layers panel, "3 option" with a real model, web pages and the WebView limits (hang detection, 10-minute stop, blocked requests), the file share of an .html file,
+  everything about Three.js (the library is not in the project).
+- Existing CI failures: investigated on 16 Oct 2026 from the log of the stage 2 build (579 tests passed, 2 lint Errors in the voice code, fixed; see BUILD_NOTES "CI log of the stage 2 build"). Stage 3 has not been through CI yet. The ZIP contains the workflow but no CI log or `ci-reports` artifact, and the
   sandbox cannot build. Send the log (or the `ci-reports` artifact) and the failures can be looked at on their own, without
   assuming the sketch feature caused them.
 
@@ -74,11 +116,11 @@ and **real .svg / .png files**. HTML / JS designs, Three.js, layers / transforms
 | Wanted | Status | Why / what it needs |
 |---|---|---|
 | Dedicated studio screen (prompt, preview, regenerate, zoom / pan, undo / redo, save / rename / duplicate) | **Stage 2: written, not compiled** | `SketchStudioActivity` + designs store. Undo / redo lasts while a design is open (see section 5). |
-| HTML / CSS / JS designs (glassmorphism, animations) | Pending | Needs a restricted WebView: JS only in a sandbox page, no network, no bridge objects, size / time limits. Not built, so the model is not offered it. |
-| Real 3D (Three.js / WebGL) | Pending | Needs `three.min.js` bundled in `assets/` (could not be downloaded here), WebView WebGL check on the target phone, RAM / APK-size measurement (three.js is roughly 0.6-0.7 MB minified). Perspective / isometric-looking pictures drawn with paths are still 2D and are not labelled 3D. |
+| HTML / CSS / JS designs (glassmorphism, animations) | **Stage 3: written, not compiled** | `HtmlSandbox` + `SketchWebHost` (no network, no bridge object, size and time limits). See section 2c. No PNG export of a web page yet (only .html). |
+| Real 3D (Three.js / WebGL) | **Stage 3: everything except the library** | The 3D design kind, prompt, loader, WebGL probe and export are written. `three.min.js` itself is **not** in the ZIP: add it to `assets/sketch/` (README there). WebGL / RAM / APK size not measured. Perspective pictures drawn with paths are still 2D and are not labelled 3D. |
 | PNG and real `.svg` / project-file export | **Stage 2: .svg and .png written, not compiled** | FileProvider + share sheet. A project file (a design with its history) is still not exported. |
-| Layers / groups, transforms, gradients, arcs in paths | Pending | Format extension + renderer + export; not offered in the prompt. |
-| Design variations (3 layouts from one request) | Pending | Needs the studio screen and a multi-call plan for the phone model. |
+| Layers / groups, transforms, gradients, arcs in paths | **Stage 3: written, not compiled** | Format, renderer, SVG export, layer panel. Offered to the model by the studio prompt only (not the chat prompt). |
+| Design variations (3 layouts from one request) | **Stage 3: written, not compiled** | Three calls in a row on the phone model (slow: up to 3 x 2 calls); pick one. Drawings only, not web pages. |
 | Light theme | Not applicable yet | The app has one (dark) colour set. |
 | Fabric.js | Not added | Nothing in stage 1 needs a canvas object library. |
 
@@ -100,3 +142,14 @@ and **real .svg / .png files**. HTML / JS designs, Three.js, layers / transforms
 - Files are shared through the Android share sheet ("Save to Files / Drive" there). There is no direct "save to Downloads" button.
 - The PNG is encoded on the main thread (a short job at 1080 px). Not measured on a phone.
 - `SketchGen` repeats the call logic of `ChatRunner.runSketch` on purpose, so a mistake in the studio cannot break the chat. If the logic changes, change both.
+
+### Known limits of stage 3
+
+- The chat path (`ChatRunner.runSketch`) still uses the stage 1 prompt: gradients, transforms and layers are offered to the model only in the studio. A chat drawing that contains them (the model may write them anyway) is read and drawn correctly.
+- A transform moves the whole shape, including its label and arrow head, around the centre of its box (a path's box is the box of its control points, not of the curve). A group's box ignores the transforms of its children.
+- A gradient has two colours only, no stops. Group `fill` / `stroke` are ignored (only `op` and the transform count). No group inside a group.
+- "3 option" makes up to 3 x 2 model calls one after the other: slow on a phone. Variations are for new drawings only, not for edits and not for web pages. The answers are not saved until you tap "Ye lo".
+- Layers: no drag and drop, no multi-select; "Group" wraps ONE shape. The last layer cannot be removed.
+- Web pages: the phone model has a small context, so "Badlo" refuses a page over 3,500 characters; `HtmlSandbox.MAX_HTML` is 20,000. A page is shown in a 480 dp box; scrolling inside the page takes the touch (scroll the studio by the area around it). No PNG export of a page.
+- The word list in `HtmlSandbox.check` has false positives (a variable called `location`, text such as "eval(" in a comment) and cannot be complete: the real protection is the CSP and the WebView settings.
+- Old saved designs have no `kind` / `html` field: they read as drawings (Gson leaves them null, `SketchDesigns.kindOf` handles it).

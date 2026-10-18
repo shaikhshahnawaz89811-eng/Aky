@@ -25,8 +25,42 @@ object SketchDesigns {
         val title: String,
         val json: String = "",
         val created: Long = 0L,
-        val updated: Long = 0L
+        val updated: Long = 0L,
+        /**
+         * Stage 3: [KIND_SKETCH] (the default, also for every design saved before stage 3), [KIND_HTML] (a web page) or
+         * [KIND_HTML3D] (a web page with the Three.js library). Nullable on purpose: Gson fills a field that is missing in old
+         * saved data with null, not with the Kotlin default, so read it with [kindOf].
+         */
+        val kind: String? = null,
+        /** The page of a web design (the [json] of such a design stays empty). Nullable for the same reason, read it with [htmlOf]. */
+        val html: String? = null
     )
+
+    const val KIND_SKETCH = "sketch"
+    const val KIND_HTML = "html"
+    const val KIND_HTML3D = "html3d"
+
+    fun kindOf(d: Design): String = when (d.kind) {
+        KIND_HTML -> KIND_HTML
+        KIND_HTML3D -> KIND_HTML3D
+        else -> KIND_SKETCH
+    }
+
+    fun isWeb(d: Design): Boolean = kindOf(d) != KIND_SKETCH
+
+    fun is3d(d: Design): Boolean = kindOf(d) == KIND_HTML3D
+
+    fun htmlOf(d: Design): String = d.html.orEmpty()
+
+    /** What undo / redo and the model work on: the page for a web design, the sketch JSON otherwise ("" = empty). */
+    fun contentOf(d: Design): String = if (isWeb(d)) htmlOf(d) else d.json
+
+    /** The short kind name shown in the list ("</>" for a page, "3D" for a Three.js page, "" for a drawing). */
+    fun badge(d: Design): String = when (kindOf(d)) {
+        KIND_HTML -> "</>"
+        KIND_HTML3D -> "3D"
+        else -> ""
+    }
 
     /** Trimmed, one-line title of at most [MAX_TITLE] characters; a blank one becomes [UNTITLED]. */
     fun cleanTitle(raw: String?): String {
@@ -38,6 +72,12 @@ object SketchDesigns {
 
     fun newDesign(title: String?, json: String, now: Long, id: String = UUID.randomUUID().toString()): Design =
         Design(id = id, title = cleanTitle(title), json = json, created = now, updated = now)
+
+    /** An empty web design ([KIND_HTML] or [KIND_HTML3D]); anything else gives a normal sketch design. */
+    fun newWebDesign(title: String?, kind: String, now: Long, id: String = UUID.randomUUID().toString()): Design {
+        val k = if (kind == KIND_HTML || kind == KIND_HTML3D) kind else KIND_SKETCH
+        return Design(id = id, title = cleanTitle(title), json = "", created = now, updated = now, kind = if (k == KIND_SKETCH) null else k, html = null)
+    }
 
     fun find(list: List<Design>, id: String?): Design? = if (id == null) null else list.firstOrNull { it.id == id }
 
@@ -51,9 +91,16 @@ object SketchDesigns {
         return list + d
     }
 
-    /** New JSON for design [id] (also bumps the change time). Unknown id: the list comes back unchanged. */
+    /**
+     * New content for design [id] (also bumps the change time): the sketch JSON, or the page of a web design.
+     * Unknown id: the list comes back unchanged.
+     */
     fun update(list: List<Design>, id: String, json: String, now: Long): List<Design> =
-        list.map { if (it.id == id) it.copy(json = json, updated = now) else it }
+        list.map {
+            if (it.id != id) it
+            else if (isWeb(it)) it.copy(html = json, updated = now)
+            else it.copy(json = json, updated = now)
+        }
 
     fun rename(list: List<Design>, id: String, title: String?, now: Long): List<Design> =
         list.map { if (it.id == id) it.copy(title = cleanTitle(title), updated = now) else it }

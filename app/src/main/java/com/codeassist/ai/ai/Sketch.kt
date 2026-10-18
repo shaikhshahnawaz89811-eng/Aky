@@ -25,7 +25,16 @@ import java.util.Locale
  *  - optional "bg" background colour of the whole drawing;
  *  - "v":2 raises the shape limit from 40 to 120 (documents without "v" keep the old limit);
  *  - revisions: [revisePrompt] hands the model the current JSON plus one change request.
- * NOT supported yet (so the prompt never offers them): layers / groups, transforms, gradients, arcs in paths, real 3D.
+ *
+ * Sketch Studio, stage 3 (14 Oct 2026), all optional and backward compatible:
+ *  - arcs in paths (A / a, see [SvgPath]);
+ *  - gradients: `"grad":"#RRGGBB #RRGGBB 90"` (linear, angle in degrees, 0 = left to right, 90 = top to bottom) or
+ *    `"grad":"#RRGGBB #RRGGBB radial"` as the fill of a shape, and `"bggrad"` for the whole background;
+ *  - transforms per shape: `"dx"`, `"dy"` (move), `"rot"` (turn, degrees) and `"sc"` (scale), all around the centre of the shape;
+ *  - groups (layers, one level): `{"t":"group","l":"sky","shapes":[...]}`; a group takes the same transform keys and `"op"`;
+ *  - `"hide":true` hides a shape or a group (it stays in the file).
+ * The chat prompt ([systemPrompt]) still does not offer these (small context); the studio prompt does ([studioSystemPrompt]).
+ * NOT supported: real 3D (see [HtmlSandbox] for web pages / Three.js, which are a different kind of design, not part of this format).
  *
  * Pure Kotlin (Gson only), no Android types: the JVM tests cover everything except the drawing itself.
  */
@@ -43,17 +52,49 @@ object Sketch {
     /** A revision sends the current JSON back to the model; a bigger drawing cannot be edited by the phone model. */
     const val MAX_REVISE_JSON = 3_500
     const val MAX_ITEMS = 8
+    /** Shapes inside ONE group; the limit for the whole drawing (children included) is [MAX_SHAPES_V2]. */
+    const val MAX_GROUP_CHILDREN = 60
     private const val MAX_LABEL = 24
     private const val MAX_TITLE = 40
 
     enum class Kind(val key: String) {
         RECT("rect"), TRI("tri"), CIRCLE("circle"), LINE("line"), TEXT("text"),
-        PATH("path"), POLY("poly"), ELLIPSE("ellipse")
+        PATH("path"), POLY("poly"), ELLIPSE("ellipse"), GROUP("group")
+    }
+
+    /**
+     * A two-colour gradient. [angle] is in degrees for a linear one: 0 = left to right, 90 = top to bottom (screen coordinates).
+     * The colours are opaque ARGB ints.
+     */
+    class Gradient(val radial: Boolean, val from: Int, val to: Int, val angle: Float) {
+        /** x0, y0, x1, y1 of the gradient line over [b] (minX, minY, maxX, maxY): through the centre, long enough to span the box. */
+        fun line(b: FloatArray): FloatArray {
+            val cx = (b[0] + b[2]) / 2f
+            val cy = (b[1] + b[3]) / 2f
+            val w = b[2] - b[0]
+            val h = b[3] - b[1]
+            val rad = Math.toRadians(angle.toDouble())
+            val dx = Math.cos(rad).toFloat()
+            val dy = Math.sin(rad).toFloat()
+            val half = (Math.abs(dx) * w + Math.abs(dy) * h) / 2f
+            return floatArrayOf(cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half)
+        }
+
+        /** Radius of the radial form over [b]: half of the longer side (never below 0.1). */
+        fun radius(b: FloatArray): Float = Math.max(0.1f, Math.max(b[2] - b[0], b[3] - b[1]) / 2f)
+
+        /** The JSON / prompt text: "#RRGGBB #RRGGBB 90" or "#RRGGBB #RRGGBB radial". */
+        fun text(): String = Sketch.colorText(from) + " " + Sketch.colorText(to) + " " + (if (radial) "radial" else SvgPath.fmt(angle))
+    }
+
+    /** Move ([dx], [dy] canvas units), turn ([rot] degrees, clockwise on screen) and scale ([scale]) around the shape's centre. */
+    class Xform(val dx: Float, val dy: Float, val rot: Float, val scale: Float) {
+        fun isIdentity(): Boolean = dx == 0f && dy == 0f && rot == 0f && scale == 1f
     }
 
     /** Optional look of one shape. Colours are ARGB ints; fill 0 means "none". A null field means "use the default". */
-    class Style(val fill: Int?, val stroke: Int?, val strokeWidth: Float?, val opacity: Float?) {
-        fun isEmpty(): Boolean = fill == null && stroke == null && strokeWidth == null && opacity == null
+    class Style(val fill: Int?, val stroke: Int?, val strokeWidth: Float?, val opacity: Float?, val grad: Gradient? = null) {
+        fun isEmpty(): Boolean = fill == null && stroke == null && strokeWidth == null && opacity == null && grad == null
     }
 
     /**
@@ -74,11 +115,26 @@ object Sketch {
         val path: List<SvgPath.Seg>? = null,
         val points: FloatArray? = null,
         val closed: Boolean = true,
-        val style: Style? = null
-    )
+        val style: Style? = null,
+        /** GROUP only: the shapes of the layer, drawn in order (no group inside a group). */
+        val children: List<Shape>? = null,
+        val xform: Xform? = null,
+        /** True = not drawn and not exported, but kept in the file. */
+        val hidden: Boolean = false
+    ) {
+        /** The same shape with [xform] and [hidden] set (used by the reader after the shape itself was read). */
+        fun withExtras(xform: Xform?, hidden: Boolean): Shape =
+            Shape(kind, a, b, c, d, label, arrow, path, points, closed, style, children, xform, hidden)
+
+        /** The same shape with [hidden] changed (layer panel). */
+        fun withHidden(hidden: Boolean): Shape = withExtras(xform, hidden)
+
+        /** The same shape with a new name / label. */
+        fun withLabel(label: String): Shape = Shape(kind, a, b, c, d, label, arrow, path, points, closed, style, children, xform, hidden)
+    }
 
     /** [background] is an ARGB colour, or null for the app's default card colour. */
-    class Drawing(val title: String, val shapes: List<Shape>, val background: Int? = null)
+    class Drawing(val title: String, val shapes: List<Shape>, val background: Int? = null, val bgGrad: Gradient? = null)
 
     sealed class Parsed {
         class Ok(val drawing: Drawing, val kind: String) : Parsed()
@@ -178,21 +234,30 @@ object Sketch {
         if (bgRaw.isNotEmpty()) {
             background = parseColor(bgRaw) ?: return Parsed.Bad("bad color '$bgRaw' for bg (use #RRGGBB)")
         }
+        val bgGradRaw = str(obj, "bggrad")
+        var bgGrad: Gradient? = null
+        if (bgGradRaw.isNotEmpty()) {
+            bgGrad = parseGradient(bgGradRaw) ?: return Parsed.Bad("bad gradient '$bgGradRaw' for bggrad (use \"#RRGGBB #RRGGBB 90\")")
+        }
         val out = ArrayList<Shape>()
         var points = 0
+        var total = 0
         for (e in arr) {
             if (!e.isJsonObject) return Parsed.Bad("every shape must be an object")
             val s = shapeFromJson(e.asJsonObject)
             when (s) {
                 is String -> return Parsed.Bad(s)
                 is Shape -> {
-                    points += (s.path?.size ?: 0) + (s.points?.size ?: 0) / 2
+                    points += pointsOf(s)
                     if (points > MAX_POINTS) return Parsed.Bad("the drawing is too complex (more than $MAX_POINTS path points)")
+                    total += 1 + (s.children?.size ?: 0)
+                    if (version < 2 && total > MAX_SHAPES) return Parsed.Bad("at most $MAX_SHAPES shapes (add \"v\":2 for up to $MAX_SHAPES_V2)")
+                    if (total > MAX_SHAPES_V2) return Parsed.Bad("at most $MAX_SHAPES_V2 shapes (groups count their shapes too)")
                     out.add(s)
                 }
             }
         }
-        return Parsed.Ok(Drawing(title, out, background), "shapes")
+        return Parsed.Ok(Drawing(title, out, background, bgGrad), "shapes")
     }
 
     // ---------- colours and styles ----------
@@ -244,7 +309,124 @@ object Sketch {
             op = num(o, "op") ?: return "op must be a number"
             if (op < 0f || op > 1f) return "op must be between 0 and 1"
         }
-        return Style(fill, stroke, sw, op)
+        val gradRaw = str(o, "grad")
+        var grad: Gradient? = null
+        if (gradRaw.isNotEmpty()) {
+            grad = parseGradient(gradRaw) ?: return "bad gradient '$gradRaw' (use \"#RRGGBB #RRGGBB 90\" or \"#RRGGBB #RRGGBB radial\")"
+        }
+        return Style(fill, stroke, sw, op, grad)
+    }
+
+    /**
+     * "#RRGGBB #RRGGBB", then optionally an angle in degrees (-360..360) or the word radial. Separators: spaces, commas or ">".
+     * Null when it is not that. Colours must be real colours (no "none").
+     */
+    fun parseGradient(raw: String): Gradient? {
+        val toks = raw.trim().split(Regex("[\\s,>]+")).filter { it.isNotEmpty() }
+        if (toks.size < 2 || toks.size > 3) return null
+        val c1 = parseColor(toks[0]) ?: return null
+        val c2 = parseColor(toks[1]) ?: return null
+        if (c1 == 0 || c2 == 0) return null
+        if (toks.size == 2) return Gradient(false, c1, c2, 90f)
+        val third = toks[2].lowercase()
+        if (third == "radial") return Gradient(true, c1, c2, 0f)
+        val angle = third.toFloatOrNull() ?: return null
+        if (angle.isNaN() || angle.isInfinite() || angle < -360f || angle > 360f) return null
+        return Gradient(false, c1, c2, angle)
+    }
+
+    /** Transform keys of one shape: null when none is written, a String with the reason when one is wrong. */
+    private fun xformFrom(o: JsonObject): Any? {
+        if (!o.has("dx") && !o.has("dy") && !o.has("rot") && !o.has("sc")) return null
+        val dx = if (o.has("dx")) (num(o, "dx") ?: return "dx must be a number") else 0f
+        val dy = if (o.has("dy")) (num(o, "dy") ?: return "dy must be a number") else 0f
+        val rot = if (o.has("rot")) (num(o, "rot") ?: return "rot must be a number") else 0f
+        val sc = if (o.has("sc")) (num(o, "sc") ?: return "sc must be a number") else 1f
+        if (dx < -100f || dx > 100f || dy < -100f || dy > 100f) return "dx and dy must be between -100 and 100"
+        if (rot < -360f || rot > 360f) return "rot must be between -360 and 360 (degrees)"
+        if (sc < 0.1f || sc > 5f) return "sc must be between 0.1 and 5"
+        val x = Xform(dx, dy, rot, sc)
+        return if (x.isIdentity()) null else x
+    }
+
+    /** Path segments plus polygon points of [s] and of its children (the budget [MAX_POINTS] counts them all). */
+    fun pointsOf(s: Shape): Int {
+        var n = (s.path?.size ?: 0) + (s.points?.size ?: 0) / 2
+        s.children?.forEach { n += pointsOf(it) }
+        return n
+    }
+
+    /** Shapes of a drawing, a group's shapes included (the group itself counts as one). */
+    fun shapeCount(d: Drawing): Int = d.shapes.sumOf { 1 + (it.children?.size ?: 0) }
+
+    /** minX, minY, maxX, maxY of [s] in canvas units (the pivot of its transform and the box of its gradient). */
+    fun bounds(s: Shape): FloatArray {
+        return when (s.kind) {
+            Kind.RECT, Kind.TRI -> floatArrayOf(s.a, s.b, s.a + s.c, s.b + s.d)
+            Kind.CIRCLE -> floatArrayOf(s.a - s.c, s.b - s.c, s.a + s.c, s.b + s.c)
+            Kind.ELLIPSE -> floatArrayOf(s.a - s.c, s.b - s.d, s.a + s.c, s.b + s.d)
+            Kind.LINE -> floatArrayOf(Math.min(s.a, s.c), Math.min(s.b, s.d), Math.max(s.a, s.c), Math.max(s.b, s.d))
+            Kind.TEXT -> floatArrayOf(s.a, s.b, s.a, s.b)
+            Kind.PATH -> {
+                var minX = Float.MAX_VALUE
+                var minY = Float.MAX_VALUE
+                var maxX = -Float.MAX_VALUE
+                var maxY = -Float.MAX_VALUE
+                for (seg in s.path ?: emptyList()) {
+                    var i = 0
+                    while (i + 1 < seg.v.size) {
+                        minX = Math.min(minX, seg.v[i])
+                        maxX = Math.max(maxX, seg.v[i])
+                        minY = Math.min(minY, seg.v[i + 1])
+                        maxY = Math.max(maxY, seg.v[i + 1])
+                        i += 2
+                    }
+                }
+                if (minX > maxX) floatArrayOf(0f, 0f, SIZE, SIZE) else floatArrayOf(minX, minY, maxX, maxY)
+            }
+            Kind.POLY -> {
+                val p = s.points ?: FloatArray(0)
+                if (p.size < 2) floatArrayOf(0f, 0f, SIZE, SIZE) else {
+                    var minX = p[0]
+                    var maxX = p[0]
+                    var minY = p[1]
+                    var maxY = p[1]
+                    var i = 2
+                    while (i + 1 < p.size) {
+                        minX = Math.min(minX, p[i])
+                        maxX = Math.max(maxX, p[i])
+                        minY = Math.min(minY, p[i + 1])
+                        maxY = Math.max(maxY, p[i + 1])
+                        i += 2
+                    }
+                    floatArrayOf(minX, minY, maxX, maxY)
+                }
+            }
+            Kind.GROUP -> {
+                val kids = (s.children ?: emptyList()).filter { !it.hidden }
+                if (kids.isEmpty()) floatArrayOf(0f, 0f, SIZE, SIZE) else {
+                    val first = bounds(kids[0])
+                    var minX = first[0]
+                    var minY = first[1]
+                    var maxX = first[2]
+                    var maxY = first[3]
+                    for (k in kids.drop(1)) {
+                        val b = bounds(k)
+                        minX = Math.min(minX, b[0])
+                        minY = Math.min(minY, b[1])
+                        maxX = Math.max(maxX, b[2])
+                        maxY = Math.max(maxY, b[3])
+                    }
+                    floatArrayOf(minX, minY, maxX, maxY)
+                }
+            }
+        }
+    }
+
+    /** Centre of [bounds] (x, y): the pivot of a turn or a scale. */
+    fun pivot(s: Shape): FloatArray {
+        val b = bounds(s)
+        return floatArrayOf((b[0] + b[2]) / 2f, (b[1] + b[3]) / 2f)
     }
 
     /** Polygon points from [[x,y],...], a flat [x,y,x,y,...] list or the text "x,y x,y". A FloatArray or a reason String. */
@@ -284,8 +466,44 @@ object Sketch {
         return out
     }
 
-    /** A [Shape], or a String with the reason it is refused. */
-    private fun shapeFromJson(o: JsonObject): Any {
+    private fun isTrue(o: JsonObject, key: String): Boolean =
+        o.get(key)?.let { it.isJsonPrimitive && it.asString.equals("true", ignoreCase = true) } ?: false
+
+    /** A [Shape] (with transform, hide flag and, for a group, its shapes), or a String with the reason it is refused. */
+    private fun shapeFromJson(o: JsonObject, inGroup: Boolean = false): Any {
+        val xo = xformFrom(o)
+        if (xo is String) return xo
+        val xf: Xform? = xo as Xform?
+        val hide = isTrue(o, "hide")
+        val t = str(o, "t").lowercase().ifEmpty { str(o, "type").lowercase() }
+        val base: Any = if (t == Kind.GROUP.key) groupFromJson(o, inGroup) else baseShape(o)
+        if (base is String) return base
+        val sh = base as Shape
+        return if (xf == null && !hide) sh else sh.withExtras(xf, hide)
+    }
+
+    private fun groupFromJson(o: JsonObject, inGroup: Boolean): Any {
+        if (inGroup) return "a group cannot hold another group"
+        val arr = if (o.get("shapes")?.isJsonArray == true) o.getAsJsonArray("shapes") else return "a group needs 'shapes' (1 to $MAX_GROUP_CHILDREN)"
+        if (arr.size() == 0 || arr.size() > MAX_GROUP_CHILDREN) return "a group needs 1 to $MAX_GROUP_CHILDREN shapes"
+        val styleOr = styleFrom(o)
+        if (styleOr is String) return styleOr
+        val st: Style? = (styleOr as Style).takeUnless { it.isEmpty() }
+        val kids = ArrayList<Shape>()
+        for (e in arr) {
+            if (!e.isJsonObject) return "every shape must be an object"
+            val k = shapeFromJson(e.asJsonObject, true)
+            when (k) {
+                is String -> return k
+                is Shape -> kids.add(k)
+            }
+        }
+        val name = clip(str(o, "l").ifEmpty { str(o, "label") }.ifEmpty { str(o, "name") }, MAX_LABEL)
+        return Shape(Kind.GROUP, 0f, 0f, 0f, 0f, name, style = st, children = kids)
+    }
+
+    /** One non-group shape, or a String with the reason it is refused. */
+    private fun baseShape(o: JsonObject): Any {
         val t = str(o, "t").lowercase().ifEmpty { str(o, "type").lowercase() }
         val label = clip(str(o, "l").ifEmpty { str(o, "label") }, MAX_LABEL)
         val arrow = o.get("arrow")?.let { it.isJsonPrimitive && it.asString.equals("true", ignoreCase = true) } ?: false
@@ -342,7 +560,7 @@ object Sketch {
                 Shape(kind, xf, yf, x2 as Float, y2 as Float, label, arrow, style = st)
             }
             Kind.TEXT -> if (label.isEmpty()) "a text shape needs 'l'" else Shape(kind, xf, yf, 0f, 0f, label, style = st)
-            Kind.PATH, Kind.POLY -> "internal: path and poly are read above"
+            Kind.PATH, Kind.POLY, Kind.GROUP -> "internal: path, poly and group are read above"
         }
     }
 
@@ -449,58 +667,75 @@ object Sketch {
         root.addProperty("v", VERSION)
         root.addProperty("title", d.title)
         if (d.background != null) root.addProperty("bg", colorText(d.background))
+        if (d.bgGrad != null) root.addProperty("bggrad", d.bgGrad.text())
         val arr = JsonArray()
-        for (s in d.shapes) {
-            val o = JsonObject()
-            o.addProperty("t", s.kind.key)
-            if (s.kind != Kind.PATH && s.kind != Kind.POLY) {
-                o.addProperty("x", s.a)
-                o.addProperty("y", s.b)
-            }
-            when (s.kind) {
-                Kind.RECT, Kind.TRI -> {
-                    o.addProperty("w", s.c)
-                    o.addProperty("h", s.d)
-                }
-                Kind.CIRCLE -> o.addProperty("r", s.c)
-                Kind.ELLIPSE -> {
-                    o.addProperty("rx", s.c)
-                    o.addProperty("ry", s.d)
-                }
-                Kind.LINE -> {
-                    o.addProperty("x2", s.c)
-                    o.addProperty("y2", s.d)
-                    if (s.arrow) o.addProperty("arrow", true)
-                }
-                Kind.PATH -> o.addProperty("d", SvgPath.toD(s.path ?: emptyList()))
-                Kind.POLY -> {
-                    val pts = JsonArray()
-                    val p = s.points ?: FloatArray(0)
-                    var i = 0
-                    while (i + 1 < p.size) {
-                        val pair = JsonArray()
-                        pair.add(p[i])
-                        pair.add(p[i + 1])
-                        pts.add(pair)
-                        i += 2
-                    }
-                    o.add("pts", pts)
-                    if (!s.closed) o.addProperty("closed", false)
-                }
-                Kind.TEXT -> Unit
-            }
-            if (s.label.isNotEmpty()) o.addProperty("l", s.label)
-            val st = s.style
-            if (st != null) {
-                if (st.fill != null) o.addProperty("fill", colorText(st.fill))
-                if (st.stroke != null) o.addProperty("stroke", colorText(st.stroke))
-                if (st.strokeWidth != null) o.addProperty("sw", st.strokeWidth)
-                if (st.opacity != null) o.addProperty("op", st.opacity)
-            }
-            arr.add(o)
-        }
+        for (s in d.shapes) arr.add(shapeJson(s))
         root.add("shapes", arr)
         return root.toString()
+    }
+
+    private fun shapeJson(s: Shape): JsonObject {
+        val o = JsonObject()
+        o.addProperty("t", s.kind.key)
+        if (s.kind != Kind.PATH && s.kind != Kind.POLY && s.kind != Kind.GROUP) {
+            o.addProperty("x", s.a)
+            o.addProperty("y", s.b)
+        }
+        when (s.kind) {
+            Kind.RECT, Kind.TRI -> {
+                o.addProperty("w", s.c)
+                o.addProperty("h", s.d)
+            }
+            Kind.CIRCLE -> o.addProperty("r", s.c)
+            Kind.ELLIPSE -> {
+                o.addProperty("rx", s.c)
+                o.addProperty("ry", s.d)
+            }
+            Kind.LINE -> {
+                o.addProperty("x2", s.c)
+                o.addProperty("y2", s.d)
+                if (s.arrow) o.addProperty("arrow", true)
+            }
+            Kind.PATH -> o.addProperty("d", SvgPath.toD(s.path ?: emptyList()))
+            Kind.POLY -> {
+                val pts = JsonArray()
+                val p = s.points ?: FloatArray(0)
+                var i = 0
+                while (i + 1 < p.size) {
+                    val pair = JsonArray()
+                    pair.add(p[i])
+                    pair.add(p[i + 1])
+                    pts.add(pair)
+                    i += 2
+                }
+                o.add("pts", pts)
+                if (!s.closed) o.addProperty("closed", false)
+            }
+            Kind.GROUP -> {
+                val kids = JsonArray()
+                for (k in s.children ?: emptyList()) kids.add(shapeJson(k))
+                o.add("shapes", kids)
+            }
+            Kind.TEXT -> Unit
+        }
+        if (s.label.isNotEmpty()) o.addProperty("l", s.label)
+        val st = s.style
+        if (st != null) {
+            if (st.fill != null) o.addProperty("fill", colorText(st.fill))
+            if (st.grad != null) o.addProperty("grad", st.grad.text())
+            if (st.stroke != null) o.addProperty("stroke", colorText(st.stroke))
+            if (st.strokeWidth != null) o.addProperty("sw", st.strokeWidth)
+            if (st.opacity != null) o.addProperty("op", st.opacity)
+        }
+        val xf = s.xform
+        if (xf != null) {
+            if (xf.dx != 0f) o.addProperty("dx", xf.dx)
+            if (xf.dy != 0f) o.addProperty("dy", xf.dy)
+            if (xf.rot != 0f) o.addProperty("rot", xf.rot)
+            if (xf.scale != 1f) o.addProperty("sc", xf.scale)
+        }
+        if (s.hidden) o.addProperty("hide", true)
+        return o
     }
 
     /** The stored JSON back as a drawing; null when it is not a valid sketch (the chat then just shows the text). */
@@ -530,17 +765,49 @@ object Sketch {
         return if (alpha == 0xFF) base else base + " fill-opacity=\"" + n(alpha / 255f) + "\""
     }
 
-    private fun paint(s: Shape, defaultFill: Int?, strokeToo: Boolean = true): String {
+    /** Gradient definitions collected while the SVG body is written; they go into one <defs> block in front of it. */
+    private class SvgCtx {
+        val defs = StringBuilder()
+        var next = 0
+    }
+
+    private fun hex(argb: Int): String = String.format(Locale.US, "#%06X", argb and 0xFFFFFF)
+
+    /** Writes the gradient into [ctx] (user space = canvas units, same box as the Android drawing) and returns its id. */
+    private fun gradientDef(ctx: SvgCtx, g: Gradient, b: FloatArray): String {
+        ctx.next++
+        val id = "g" + ctx.next
+        if (g.radial) {
+            ctx.defs.append("<radialGradient id=\"").append(id).append("\" gradientUnits=\"userSpaceOnUse\" cx=\"")
+                .append(n((b[0] + b[2]) / 2f)).append("\" cy=\"").append(n((b[1] + b[3]) / 2f)).append("\" r=\"").append(n(g.radius(b))).append("\">")
+            ctx.defs.append("<stop offset=\"0\" stop-color=\"").append(hex(g.from)).append("\"/><stop offset=\"1\" stop-color=\"")
+                .append(hex(g.to)).append("\"/></radialGradient>\n")
+        } else {
+            val l = g.line(b)
+            ctx.defs.append("<linearGradient id=\"").append(id).append("\" gradientUnits=\"userSpaceOnUse\" x1=\"").append(n(l[0]))
+                .append("\" y1=\"").append(n(l[1])).append("\" x2=\"").append(n(l[2])).append("\" y2=\"").append(n(l[3])).append("\">")
+            ctx.defs.append("<stop offset=\"0\" stop-color=\"").append(hex(g.from)).append("\"/><stop offset=\"1\" stop-color=\"")
+                .append(hex(g.to)).append("\"/></linearGradient>\n")
+        }
+        return id
+    }
+
+    private fun paint(s: Shape, defaultFill: Int?, ctx: SvgCtx, strokeToo: Boolean = true): String {
         val st = s.style
         val sb = StringBuilder()
-        val fill = st?.fill ?: defaultFill
-        sb.append(if (fill == null) "fill=\"none\"" else fillAttr(fill))
+        val grad = st?.grad
+        if (grad != null && defaultFill != null) {
+            sb.append("fill=\"url(#").append(gradientDef(ctx, grad, bounds(s))).append(")\"")
+        } else {
+            val fill = st?.fill ?: defaultFill
+            sb.append(if (fill == null) "fill=\"none\"" else fillAttr(fill))
+        }
         if (strokeToo) {
             val stroke = st?.stroke ?: DEFAULT_STROKE
             if (stroke == 0) {
                 sb.append(" stroke=\"none\"")
             } else {
-                sb.append(" stroke=\"").append(String.format(Locale.US, "#%06X", stroke and 0xFFFFFF)).append("\"")
+                sb.append(" stroke=\"").append(hex(stroke)).append("\"")
                 sb.append(" stroke-width=\"").append(n(st?.strokeWidth ?: 0.5f)).append("\"")
                 sb.append(" stroke-linecap=\"round\" stroke-linejoin=\"round\"")
             }
@@ -550,64 +817,113 @@ object Sketch {
         return sb.toString()
     }
 
+    /** The SVG `transform` text of [xf] (move, then turn, then scale, the last two around the shape's centre). */
+    private fun xformAttr(s: Shape, xf: Xform): String {
+        val p = pivot(s)
+        val parts = ArrayList<String>()
+        if (xf.dx != 0f || xf.dy != 0f) parts.add("translate(" + n(xf.dx) + " " + n(xf.dy) + ")")
+        if (xf.rot != 0f) parts.add("rotate(" + n(xf.rot) + " " + n(p[0]) + " " + n(p[1]) + ")")
+        if (xf.scale != 1f) parts.add("translate(" + n(p[0]) + " " + n(p[1]) + ") scale(" + n(xf.scale) + ") translate(" + n(-p[0]) + " " + n(-p[1]) + ")")
+        return parts.joinToString(" ")
+    }
+
     /**
      * The drawing as a standalone SVG document (viewBox 0 0 100 100). It looks like the in-app preview: same default
-     * colours, same background. Only the shapes the sketch format has are written; nothing is invented.
+     * colours, same background. Only the shapes the sketch format has are written; nothing is invented. Hidden shapes are not
+     * written. A group becomes a `<g>`; a transform becomes a `transform` attribute; a gradient a `<linearGradient>` /
+     * `<radialGradient>` in `<defs>`.
      */
     fun toSvg(d: Drawing): String {
+        val ctx = SvgCtx()
+        val body = StringBuilder()
+        for (s in d.shapes) svgShape(body, s, ctx)
+        val bgPaint = if (d.bgGrad != null) {
+            "fill=\"url(#" + gradientDef(ctx, d.bgGrad, floatArrayOf(0f, 0f, SIZE, SIZE)) + ")\""
+        } else {
+            fillAttr(d.background ?: DEFAULT_BG)
+        }
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
         sb.append("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\" width=\"600\" height=\"600\">\n")
         sb.append("<title>").append(xml(d.title)).append("</title>\n")
-        sb.append("<rect width=\"100\" height=\"100\" rx=\"4\" ").append(fillAttr(d.background ?: DEFAULT_BG)).append("/>\n")
-        for (s in d.shapes) {
-            when (s.kind) {
-                Kind.RECT -> {
-                    sb.append("<rect x=\"").append(n(s.a)).append("\" y=\"").append(n(s.b)).append("\" width=\"").append(n(s.c))
-                        .append("\" height=\"").append(n(s.d)).append("\" rx=\"1.2\" ").append(paint(s, DEFAULT_FILL)).append("/>\n")
-                    if (s.label.isNotEmpty()) text(sb, s.label, s.a + s.c / 2, s.b + s.d / 2, 3.6f, s)
-                }
-                Kind.TRI -> {
-                    sb.append("<polygon points=\"").append(n(s.a + s.c / 2)).append(',').append(n(s.b)).append(' ')
-                        .append(n(s.a + s.c)).append(',').append(n(s.b + s.d)).append(' ')
-                        .append(n(s.a)).append(',').append(n(s.b + s.d)).append("\" ").append(paint(s, DEFAULT_FILL)).append("/>\n")
-                    if (s.label.isNotEmpty()) text(sb, s.label, s.a + s.c / 2, s.b + s.d * 0.7f, 3.4f, s)
-                }
-                Kind.CIRCLE -> {
-                    sb.append("<circle cx=\"").append(n(s.a)).append("\" cy=\"").append(n(s.b)).append("\" r=\"").append(n(s.c))
-                        .append("\" ").append(paint(s, DEFAULT_FILL)).append("/>\n")
-                    if (s.label.isNotEmpty()) text(sb, s.label, s.a, s.b, 3.4f, s)
-                }
-                Kind.ELLIPSE -> {
-                    sb.append("<ellipse cx=\"").append(n(s.a)).append("\" cy=\"").append(n(s.b)).append("\" rx=\"").append(n(s.c))
-                        .append("\" ry=\"").append(n(s.d)).append("\" ").append(paint(s, DEFAULT_FILL)).append("/>\n")
-                    if (s.label.isNotEmpty()) text(sb, s.label, s.a, s.b, 3.4f, s)
-                }
-                Kind.LINE -> {
-                    sb.append("<line x1=\"").append(n(s.a)).append("\" y1=\"").append(n(s.b)).append("\" x2=\"").append(n(s.c))
-                        .append("\" y2=\"").append(n(s.d)).append("\" ").append(paint(s, null)).append("/>\n")
-                    if (s.arrow) arrowHead(sb, s)
-                    if (s.label.isNotEmpty()) text(sb, s.label, (s.a + s.c) / 2, (s.b + s.d) / 2 - 2f, 3.2f, s)
-                }
-                Kind.PATH -> sb.append("<path d=\"").append(SvgPath.toD(s.path ?: emptyList())).append("\" ")
-                    .append(paint(s, DEFAULT_FILL)).append("/>\n")
-                Kind.POLY -> {
-                    val p = s.points ?: FloatArray(0)
-                    val pts = StringBuilder()
-                    var i = 0
-                    while (i + 1 < p.size) {
-                        if (pts.isNotEmpty()) pts.append(' ')
-                        pts.append(n(p[i])).append(',').append(n(p[i + 1]))
-                        i += 2
-                    }
-                    sb.append(if (s.closed) "<polygon" else "<polyline").append(" points=\"").append(pts).append("\" ")
-                        .append(paint(s, if (s.closed) DEFAULT_FILL else null)).append("/>\n")
-                }
-                Kind.TEXT -> text(sb, s.label, s.a, s.b, 4.2f, s)
-            }
-        }
+        if (ctx.defs.isNotEmpty()) sb.append("<defs>\n").append(ctx.defs).append("</defs>\n")
+        sb.append("<rect width=\"100\" height=\"100\" rx=\"4\" ").append(bgPaint).append("/>\n")
+        sb.append(body)
         sb.append("</svg>\n")
         return sb.toString()
+    }
+
+    private fun svgShape(sb: StringBuilder, s: Shape, ctx: SvgCtx) {
+        if (s.hidden) return
+        val xf = s.xform
+        if (s.kind == Kind.GROUP) {
+            sb.append("<g")
+            if (xf != null) sb.append(" transform=\"").append(xformAttr(s, xf)).append("\"")
+            val op = s.style?.opacity
+            if (op != null && op < 1f) sb.append(" opacity=\"").append(n(op)).append("\"")
+            if (s.label.isNotEmpty()) sb.append(" id=\"").append(xml(layerId(s.label))).append("\"")
+            sb.append(">\n")
+            for (k in s.children ?: emptyList()) svgShape(sb, k, ctx)
+            sb.append("</g>\n")
+            return
+        }
+        if (xf != null) sb.append("<g transform=\"").append(xformAttr(s, xf)).append("\">\n")
+        svgPlain(sb, s, ctx)
+        if (xf != null) sb.append("</g>\n")
+    }
+
+    /** An id-safe layer name ("Sky 1" -> "sky_1"). */
+    private fun layerId(name: String): String {
+        val c = name.lowercase().map { if (it in 'a'..'z' || it in '0'..'9') it else '_' }.joinToString("").trim('_')
+        return if (c.isEmpty()) "layer" else "layer_$c"
+    }
+
+    private fun svgPlain(sb: StringBuilder, s: Shape, ctx: SvgCtx) {
+        when (s.kind) {
+            Kind.RECT -> {
+                sb.append("<rect x=\"").append(n(s.a)).append("\" y=\"").append(n(s.b)).append("\" width=\"").append(n(s.c))
+                    .append("\" height=\"").append(n(s.d)).append("\" rx=\"1.2\" ").append(paint(s, DEFAULT_FILL, ctx)).append("/>\n")
+                if (s.label.isNotEmpty()) text(sb, s.label, s.a + s.c / 2, s.b + s.d / 2, 3.6f, s)
+            }
+            Kind.TRI -> {
+                sb.append("<polygon points=\"").append(n(s.a + s.c / 2)).append(',').append(n(s.b)).append(' ')
+                    .append(n(s.a + s.c)).append(',').append(n(s.b + s.d)).append(' ')
+                    .append(n(s.a)).append(',').append(n(s.b + s.d)).append("\" ").append(paint(s, DEFAULT_FILL, ctx)).append("/>\n")
+                if (s.label.isNotEmpty()) text(sb, s.label, s.a + s.c / 2, s.b + s.d * 0.7f, 3.4f, s)
+            }
+            Kind.CIRCLE -> {
+                sb.append("<circle cx=\"").append(n(s.a)).append("\" cy=\"").append(n(s.b)).append("\" r=\"").append(n(s.c))
+                    .append("\" ").append(paint(s, DEFAULT_FILL, ctx)).append("/>\n")
+                if (s.label.isNotEmpty()) text(sb, s.label, s.a, s.b, 3.4f, s)
+            }
+            Kind.ELLIPSE -> {
+                sb.append("<ellipse cx=\"").append(n(s.a)).append("\" cy=\"").append(n(s.b)).append("\" rx=\"").append(n(s.c))
+                    .append("\" ry=\"").append(n(s.d)).append("\" ").append(paint(s, DEFAULT_FILL, ctx)).append("/>\n")
+                if (s.label.isNotEmpty()) text(sb, s.label, s.a, s.b, 3.4f, s)
+            }
+            Kind.LINE -> {
+                sb.append("<line x1=\"").append(n(s.a)).append("\" y1=\"").append(n(s.b)).append("\" x2=\"").append(n(s.c))
+                    .append("\" y2=\"").append(n(s.d)).append("\" ").append(paint(s, null, ctx)).append("/>\n")
+                if (s.arrow) arrowHead(sb, s)
+                if (s.label.isNotEmpty()) text(sb, s.label, (s.a + s.c) / 2, (s.b + s.d) / 2 - 2f, 3.2f, s)
+            }
+            Kind.PATH -> sb.append("<path d=\"").append(SvgPath.toD(s.path ?: emptyList())).append("\" ")
+                .append(paint(s, DEFAULT_FILL, ctx)).append("/>\n")
+            Kind.POLY -> {
+                val p = s.points ?: FloatArray(0)
+                val pts = StringBuilder()
+                var i = 0
+                while (i + 1 < p.size) {
+                    if (pts.isNotEmpty()) pts.append(' ')
+                    pts.append(n(p[i])).append(',').append(n(p[i + 1]))
+                    i += 2
+                }
+                sb.append(if (s.closed) "<polygon" else "<polyline").append(" points=\"").append(pts).append("\" ")
+                    .append(paint(s, if (s.closed) DEFAULT_FILL else null, ctx)).append("/>\n")
+            }
+            Kind.TEXT -> text(sb, s.label, s.a, s.b, 4.2f, s)
+            Kind.GROUP -> Unit // written by svgShape
+        }
     }
 
     private fun text(sb: StringBuilder, label: String, cx: Float, cy: Float, size: Float, s: Shape) {
@@ -664,6 +980,23 @@ object Sketch {
         systemPrompt(lang) +
             " You are now EDITING a drawing: the user message holds the current JSON and ONE change request. " +
             "Answer with the FULL updated JSON of kind shapes with \"v\":2. Change only what was asked and keep every other shape exactly as it is."
+
+    /**
+     * What only the studio screen offers the model (stage 3). Kept out of the chat prompt on purpose: the phone model's context
+     * is small and the chat path stays exactly as it was.
+     */
+    const val ADVANCED_HELP =
+        "Also allowed: arcs in a path (A rx ry rot large sweep x y); a gradient fill \"grad\":\"#RRGGBB #RRGGBB 90\" " +
+            "(angle in degrees, 90 = top to bottom) or \"grad\":\"#RRGGBB #RRGGBB radial\"; \"bggrad\":\"#RRGGBB #RRGGBB 90\" for the background; " +
+            "move / turn / scale a shape around its centre with \"dx\":5,\"dy\":-3,\"rot\":30,\"sc\":1.5; " +
+            "layers: {\"t\":\"group\",\"l\":\"sky\",\"shapes\":[ ...shapes... ]} (a group may take dx, dy, rot, sc, op; no group inside a group); " +
+            "\"hide\":true hides a shape or a group. "
+
+    /** The studio's system prompt for a NEW drawing: the chat prompt plus [ADVANCED_HELP]. */
+    fun studioSystemPrompt(lang: String): String = systemPrompt(lang) + " " + ADVANCED_HELP
+
+    /** The studio's system prompt for an EDIT: [reviseSystemPrompt] plus [ADVANCED_HELP]. */
+    fun studioReviseSystemPrompt(lang: String): String = reviseSystemPrompt(lang) + " " + ADVANCED_HELP
 
     fun revisePrompt(currentJson: String, request: String): String =
         "Current drawing JSON: " + currentJson + "\nChange request: " + request.trim().take(300)

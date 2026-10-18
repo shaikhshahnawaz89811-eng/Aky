@@ -7,6 +7,7 @@ import com.codeassist.ai.data.AttachKind
 import com.codeassist.ai.data.Message
 import com.codeassist.ai.data.Role
 import com.codeassist.ai.data.Store
+import com.codeassist.ai.search.WebGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -109,7 +110,13 @@ object ChatRunner {
         val sketchEdit = !sketchNew && tool == null && planSrc == null && !viaVoice && provider == "local" &&
             latest.attachments.isEmpty() && SketchIntent.isRevision(latest.text, !prevSketch.isNullOrBlank())
         val sketchReq = sketchNew || sketchEdit
-        val heavy = tool == null && planSrc == null && !sketchReq && FallbackPolicy.escalateHeavyPlan(
+        // Net search (stage S2): a phone action, a plan or a sketch always wins; then the net gate decides (key, budget, connection,
+        // query check). It comes BEFORE the heavy-plan hand-over and the normal brain call.
+        val webDecision: WebGate.Decision =
+            if (tool == null && planSrc == null && !sketchReq) SearchRunner.decide(app, latest, history, viaVoice) else WebGate.Decision.Skip("earlier route")
+        val webSay = webDecision as? WebGate.Decision.Say
+        val webRun = webDecision as? WebGate.Decision.Run
+        val heavy = tool == null && planSrc == null && !sketchReq && webDecision is WebGate.Decision.Skip && FallbackPolicy.escalateHeavyPlan(
             latest.text, provider, !Store.geminiKey.isNullOrBlank(), Store.heavyPlanToGemini
         )
         val engine = if (tool != null) "tool" else if (planSrc != null || sketchReq) "local" else if (heavy) "gemini" else provider
@@ -140,6 +147,11 @@ object ChatRunner {
                     }
                     planSrc != null -> runPlanBuild(app, run, history, latest, planSrc)
                     sketchReq -> runSketch(run, latest, if (sketchEdit) prevSketch else null)
+                    webSay != null -> Message(
+                        id = run.messageId, role = Role.AI, text = webSay.text, engine = provider,
+                        note = webSay.note, state = if (webSay.error) "error" else null
+                    )
+                    webRun != null -> SearchRunner.run(run, latest, webRun, { prepareLocal(run) }, { postProgress(run) })
                     heavy -> runHeavyPlan(app, run, history, latest)
                     provider == "gemini" -> runGeminiWithFallback(app, run, history, latest)
                     else -> runLocal(app, run, history, latest)
@@ -699,6 +711,9 @@ object ChatRunner {
         val speed = String.format(Locale.US, "%.1f", reply.tokensPerSecond)
         val where = if (LocalLlm.backendName.isEmpty()) "" else " · " + LocalLlm.backendName.uppercase(Locale.US)
         var caption = "$LOCAL_NAME$where · ~$speed tok/s · ${(reply.millis + extraMs) / 1000}s"
+        // honest notes instead of silent cuts: turns that did not fit the context window, and a reply that ran up to its edge
+        if (reply.droppedTurns > 0) caption += " · " + reply.droppedTurns + " purani baat context limit ki wajah se chhodi"
+        if (reply.capped) caption += " · lamba jawab: context ke kinare par adhoora ho sakta hai"
 
         var finalText = reply.text.trim()
         if (wantTools && finalText.isNotEmpty()) {

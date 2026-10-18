@@ -37,7 +37,12 @@ import com.codeassist.ai.ai.ElevenLabsClient
 import com.codeassist.ai.ai.GeminiClient
 import com.codeassist.ai.ai.LocalLlm
 import com.codeassist.ai.ai.Modules
+import com.codeassist.ai.ai.SearchRunner
 import com.codeassist.ai.data.Store
+import com.codeassist.ai.search.FailureKind
+import com.codeassist.ai.search.SearchOutcome
+import com.codeassist.ai.search.SearchRequest
+import com.codeassist.ai.search.TavilyClient
 import com.codeassist.ai.service.AssistantService
 import com.codeassist.ai.service.BatterySetup
 import com.codeassist.ai.service.HandsFree
@@ -99,6 +104,7 @@ class VoiceAiFragment : Fragment() {
         const val RED = 0xFFFF7B72.toInt()
         const val KEY_URL = "https://aistudio.google.com/apikey"
         const val ELEVEN_KEY_URL = "https://elevenlabs.io/app/settings/api-keys"
+        const val TAVILY_KEY_URL = "https://app.tavily.com/home"
     }
 
     private lateinit var container: LinearLayout
@@ -108,6 +114,9 @@ class VoiceAiFragment : Fragment() {
     private var localCard: Card? = null
     private var geminiCard: Card? = null
     private var elevenCard: Card? = null
+    private var tavilyCard: Card? = null
+    private var testingTavily = false
+    private var tavilyMessage: String? = null
     private var testingEleven = false
     private var voiceValue: TextView? = null
     private var voiceTypeValue: TextView? = null
@@ -185,6 +194,7 @@ class VoiceAiFragment : Fragment() {
         localCard = null
         geminiCard = null
         elevenCard = null
+        tavilyCard = null
         voiceValue = null
         voiceTypeValue = null
         wakeSwitch = null
@@ -376,6 +386,9 @@ class VoiceAiFragment : Fragment() {
         }
         elevenCard = newCard()
 
+        section("Net search (Tavily)")
+        tavilyCard = newCard()
+
         section("Privacy")
         card {
             noteRow(
@@ -386,6 +399,9 @@ class VoiceAiFragment : Fragment() {
                     "Ye OCR setting Gemini ko bheje gaye original attachments ko nahi badalti.\n\n" +
                     "ElevenLabs voice (ON ho toh): jo reply bolna hai wo text ElevenLabs ko jaata hai. Key sirf is phone par encrypted rehti hai, " +
                     "app mein build ke saath nahi aati.\n\n" +
+                    "Net search (ON ho toh, sirf jab tum search maango ya \"latest\" jaisa sawaal ho): sirf tumhara sawaal Tavily ko jaata hai " +
+                    "(OTP, password, card, key jaisi cheez roki jaati hai; memory aur purani chat nahi jaati). Mile hue sources ka text jawab likhne " +
+                    "ke liye tumhare chune hue brain (Gemma ya Gemini) ko diya jaata hai.\n\n" +
                     "Voice: speech recognition Android / Google service karti hai. Offline pack ON ho toh " +
                     "audio phone par hi rehti hai. App audio kabhi save nahi karta."
             )
@@ -398,6 +414,7 @@ class VoiceAiFragment : Fragment() {
         renderLocal()
         renderGemini()
         renderEleven()
+        renderTavily()
         renderOfflineStt()
     }
 
@@ -996,6 +1013,205 @@ class VoiceAiFragment : Fragment() {
                 Store.ttsEngine = "android"
                 elevenMessage = null
                 renderEleven()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // ---------- Net search (Tavily) card ----------
+
+    private fun renderTavily() {
+        val c = tavilyCard ?: return
+        if (view == null) return
+        val key = Store.tavilyKey
+        val hasKey = !key.isNullOrBlank()
+        c.icon.setImageResource(R.drawable.ic_globe)
+        c.title.text = "Net search (Tavily)"
+        c.sub.text = "Latest khabar / sawaal ka jawab sources ke saath · internet chahiye"
+
+        when {
+            testingTavily -> setBadge(c.badge, "Testing", PURPLE)
+            !hasKey -> setBadge(c.badge, "No key", GREY)
+            Store.tavilyKeyStatus == "invalid" -> setBadge(c.badge, "Invalid", RED)
+            !Store.webSearch -> setBadge(c.badge, "Off", GREY)
+            Store.tavilyKeyStatus == "verified" -> setBadge(c.badge, "Verified", GREEN)
+            else -> setBadge(c.badge, "Key saved", BLUE)
+        }
+
+        if (hasKey && key != null) {
+            c.detail.visibility = View.VISIBLE
+            c.detail.text = "••••••••" + key.takeLast(4) + "\n" + SearchRunner.usageLine() +
+                " · net search " + (if (Store.webSearch) "ON" else "OFF")
+        } else {
+            c.detail.visibility = View.GONE
+        }
+        c.progressBox.visibility = View.GONE
+
+        val msg = tavilyMessage
+        if (msg.isNullOrBlank()) {
+            c.message.visibility = View.GONE
+        } else {
+            c.message.visibility = View.VISIBLE
+            c.message.text = msg
+            c.message.setTextColor(if (Store.tavilyKeyStatus == "invalid") RED else GREY)
+        }
+
+        val specs: List<Btn> = if (!hasKey) {
+            listOf(
+                Btn("Add API key", PRIMARY) { showTavilyKeyDialog() },
+                Btn("Get a key", GHOST) { openUrl(TAVILY_KEY_URL) }
+            )
+        } else {
+            listOf(
+                Btn(if (testingTavily) "Testing…" else "Test key", PRIMARY, enabled = !testingTavily, dim = testingTavily) { testTavilyKey() },
+                Btn("Change key", GHOST) { showTavilyKeyDialog() },
+                Btn("Options", GHOST) { showTavilyOptions() }
+            )
+        }
+        setButtons(c.buttons, specs)
+    }
+
+    private fun showTavilyKeyDialog() {
+        val ctx = requireContext()
+        val input = EditText(ctx).apply {
+            hint = "Tavily API key (tvly-...)"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setTextColor(0xFFE8EEF5.toInt())
+            setHintTextColor(0xFF5D6B7C.toInt())
+        }
+        val holder = FrameLayout(ctx).apply {
+            setPadding(dp(22), dp(10), dp(22), 0)
+            addView(input)
+        }
+        val dialog = AlertDialog.Builder(ctx)
+            .setTitle("Tavily API key")
+            .setMessage(
+                "Key sirf is phone par encrypted save hogi, app ke saath kahin nahi jaati. " +
+                    "Free account mein mahine ke 1,000 credit milte hain. Save ke baad ek chhota test chalega (1 credit)."
+            )
+            .setView(holder)
+            .setPositiveButton("Save and test", null)
+            .setNeutralButton("Paste", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(DialogInterface.BUTTON_NEUTRAL).setOnClickListener {
+                val clip = (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
+                val pasted = clip?.getItemAt(0)?.coerceToText(ctx)?.toString()?.trim().orEmpty()
+                if (pasted.isNotEmpty()) input.setText(pasted) else toast("Clipboard khaali hai.")
+            }
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+                val key = input.text.toString().trim()
+                if (key.length < 20 || key.contains(' ')) {
+                    toast("Ye API key jaisi nahi lag rahi. Poori key paste karo.")
+                    return@setOnClickListener
+                }
+                try {
+                    Store.tavilyKey = key
+                } catch (e: Exception) {
+                    toast("Key save nahi ho payi: " + (e.message ?: "keystore error"))
+                    return@setOnClickListener
+                }
+                Store.tavilyKeyStatus = "saved"
+                tavilyMessage = null
+                dialog.dismiss()
+                renderTavily()
+                testTavilyKey()
+            }
+        }
+        dialog.show()
+    }
+
+    /** One real search (1 credit, max_results 1): the only way to know the key works. The result decides the badge. */
+    private fun testTavilyKey() {
+        val key = Store.tavilyKey
+        if (key.isNullOrBlank()) {
+            toast("Pehle API key daalo.")
+            return
+        }
+        if (testingTavily) return
+        val scope = uiScope ?: return
+        val app = requireContext().applicationContext
+        testingTavily = true
+        tavilyMessage = "Key check ho rahi hai…"
+        renderTavily()
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                TavilyClient(key).search(SearchRequest(query = "tavily api test", maxResults = 1), 15_000)
+            }
+            when (outcome) {
+                is SearchOutcome.Ok -> {
+                    SearchRunner.countTestCredit(app, outcome.value.credits)
+                    Store.tavilyKeyStatus = "verified"
+                    tavilyMessage = "Key sahi hai. Test mein 1 credit gaya."
+                }
+                is SearchOutcome.Fail -> {
+                    val f = outcome.failure
+                    Store.tavilyKeyStatus = if (f.kind == FailureKind.BAD_KEY) "invalid" else "saved"
+                    tavilyMessage = f.userMessage()
+                }
+            }
+            testingTavily = false
+            if (view != null) renderTavily()
+        }
+    }
+
+    private fun showTavilyOptions() {
+        val on = Store.webSearch
+        val labels = arrayOf(
+            "Net search · " + (if (on) "ON" else "OFF"),
+            "Roz ki credit limit · " + Store.webDailyCap,
+            "Search cache saaf karo",
+            "Remove key"
+        )
+        AlertDialog.Builder(requireContext())
+            .setTitle("Net search options")
+            .setItems(labels) { _, which ->
+                when (which) {
+                    0 -> {
+                        Store.webSearch = !on
+                        tavilyMessage = null
+                        renderTavily()
+                    }
+                    1 -> chooseWebDailyCap()
+                    2 -> {
+                        SearchRunner.clearCache()
+                        tavilyMessage = "Search cache saaf ho gaya."
+                        renderTavily()
+                    }
+                    3 -> confirmRemoveTavilyKey()
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun chooseWebDailyCap() {
+        val caps = intArrayOf(15, 30, 60, 100)
+        val labels = Array(caps.size) { i -> caps[i].toString() + " credit roz" + (if (caps[i] == Store.webDailyCap) "  ✓" else "") }
+        AlertDialog.Builder(requireContext())
+            .setTitle("Roz ki credit limit")
+            .setMessage("Free plan mein mahine ke 1,000 credit hain: roz 30 lagbhag poora mahina chalta hai.")
+            .setItems(labels) { _, which ->
+                Store.webDailyCap = caps[which]
+                tavilyMessage = null
+                renderTavily()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun confirmRemoveTavilyKey() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("Tavily key hata dein?")
+            .setMessage("Key is phone se delete ho jayegi aur net search band ho jayega.")
+            .setPositiveButton("Remove") { _, _ ->
+                Store.tavilyKey = null
+                Store.tavilyKeyStatus = "none"
+                tavilyMessage = null
+                renderTavily()
             }
             .setNegativeButton("Cancel", null)
             .show()

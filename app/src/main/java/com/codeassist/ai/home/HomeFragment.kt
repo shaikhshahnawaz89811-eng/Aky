@@ -736,7 +736,12 @@ class HomeFragment : Fragment() {
     /** The wake phrase was heard (service) or the user tapped the wake notification. */
     private fun handleWake(text: String) {
         val v = voice ?: return
-        if (view == null || v.state != VoiceController.State.IDLE || ChatRunner.isRunning()) return
+        if (view == null || v.state != VoiceController.State.IDLE) return
+        if (ChatRunner.isRunning()) {
+            // the phrase was heard while Gemma is still answering: say so instead of ignoring it without a sign
+            toast("Abhi jawab chal raha hai. Khatam hone par phir bolo.")
+            return
+        }
         if (!hasMicPermission()) return
         WakeCoordinator.buzz(requireContext())
         v.startFromWake(text)

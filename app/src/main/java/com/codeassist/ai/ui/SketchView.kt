@@ -4,9 +4,12 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.Shader
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -30,6 +33,10 @@ import kotlin.math.sin
  * Sketch Studio stage 2: with [interactive] = true (only the studio screen sets it) the view also takes pinch-zoom, one-finger pan
  * and double-tap-to-reset ([ViewXform]); [renderBitmap] draws the same picture into a PNG-sized bitmap. In the chat the view stays
  * non-interactive, so it never steals a scroll from the message list.
+ *
+ * Sketch Studio stage 3: gradient fills and gradient background ([Sketch.Gradient], same box and direction as the SVG export),
+ * per-shape move / turn / scale around the shape's centre ([Sketch.Xform]), groups (layers) with their own transform and
+ * opacity, and hidden shapes.
  */
 class SketchView @JvmOverloads constructor(
     context: Context,
@@ -134,12 +141,29 @@ class SketchView @JvmOverloads constructor(
         val op = st?.opacity ?: 1f
         fill.color = st?.fill ?: baseFill
         fill.alpha = (Color.alpha(fill.color) * op).toInt().coerceIn(0, 255)
+        fill.shader = null
+        val grad = st?.grad
+        val fillable = s.kind != Sketch.Kind.TEXT && s.kind != Sketch.Kind.LINE && (s.kind != Sketch.Kind.POLY || s.closed)
+        if (grad != null && fillable) {
+            fill.shader = shaderFor(grad, Sketch.bounds(s), u)
+            fill.alpha = (255 * op).toInt().coerceIn(0, 255)
+        }
         stroke.color = st?.stroke ?: baseStroke
         stroke.alpha = (Color.alpha(stroke.color) * op).toInt().coerceIn(0, 255)
         val sw = st?.strokeWidth
         stroke.strokeWidth = if (sw != null) sw * u else baseStrokeWidth
         val textFill = st?.fill
         label.color = if (s.kind == Sketch.Kind.TEXT && textFill != null && textFill != 0) textFill else baseText
+    }
+
+    /** The shader of [g] over the box [b] (canvas units), [u] pixels per unit: the same line / centre as the SVG export writes. */
+    private fun shaderFor(g: Sketch.Gradient, b: FloatArray, u: Float): Shader {
+        return if (g.radial) {
+            RadialGradient((b[0] + b[2]) / 2f * u, (b[1] + b[3]) / 2f * u, g.radius(b) * u, g.from, g.to, Shader.TileMode.CLAMP)
+        } else {
+            val l = g.line(b)
+            LinearGradient(l[0] * u, l[1] * u, l[2] * u, l[3] * u, g.from, g.to, Shader.TileMode.CLAMP)
+        }
     }
 
     private fun buildPath(segs: List<SvgPath.Seg>, u: Float): Path {
@@ -229,74 +253,106 @@ class SketchView @JvmOverloads constructor(
             label.color = baseText
             return
         }
-        bg.color = d.background ?: baseBg
-        canvas.drawRoundRect(RectF(0f, 0f, side, side), round, round, bg)
-        if (withBorder) canvas.drawRoundRect(RectF(0f, 0f, side, side), round, round, border)
         val u = side / Sketch.SIZE
-        val pad = 0f
-        for (s in d.shapes) {
-            applyStyle(s, u)
-            when (s.kind) {
-                Sketch.Kind.RECT -> {
-                    val r = RectF(pad + s.a * u, pad + s.b * u, pad + (s.a + s.c) * u, pad + (s.b + s.d) * u)
-                    canvas.drawRoundRect(r, 3f * u * 0.4f, 3f * u * 0.4f, fill)
-                    canvas.drawRoundRect(r, 3f * u * 0.4f, 3f * u * 0.4f, stroke)
-                    if (s.label.isNotEmpty()) drawFitted(canvas, s.label, r.centerX(), r.centerY(), r.width() - 4f * density, 3.6f * u)
-                }
-                Sketch.Kind.TRI -> {
-                    val p = Path()
-                    p.moveTo((s.a + s.c / 2) * u, s.b * u)
-                    p.lineTo((s.a + s.c) * u, (s.b + s.d) * u)
-                    p.lineTo(s.a * u, (s.b + s.d) * u)
-                    p.close()
+        bg.color = d.background ?: baseBg
+        bg.shader = d.bgGrad?.let { shaderFor(it, floatArrayOf(0f, 0f, Sketch.SIZE, Sketch.SIZE), u) }
+        canvas.drawRoundRect(RectF(0f, 0f, side, side), round, round, bg)
+        bg.shader = null
+        if (withBorder) canvas.drawRoundRect(RectF(0f, 0f, side, side), round, round, border)
+        for (s in d.shapes) drawShape(canvas, s, u, side)
+        fill.shader = null
+    }
+
+    /** One shape or group with its transform and opacity. A hidden shape is skipped. */
+    private fun drawShape(canvas: Canvas, s: Sketch.Shape, u: Float, side: Float) {
+        if (s.hidden) return
+        val xf = s.xform
+        val isGroup = s.kind == Sketch.Kind.GROUP
+        val groupAlpha = if (isGroup) ((s.style?.opacity ?: 1f) * 255f).toInt().coerceIn(0, 255) else 255
+        if (xf == null && !isGroup) {
+            drawPlain(canvas, s, u, side)
+            return
+        }
+        val saved = canvas.save()
+        if (xf != null) {
+            val p = Sketch.pivot(s)
+            canvas.translate(xf.dx * u, xf.dy * u)
+            if (xf.rot != 0f) canvas.rotate(xf.rot, p[0] * u, p[1] * u)
+            if (xf.scale != 1f) canvas.scale(xf.scale, xf.scale, p[0] * u, p[1] * u)
+        }
+        if (isGroup) {
+            if (groupAlpha < 255) canvas.saveLayerAlpha(-side, -side, 2f * side, 2f * side, groupAlpha)
+            for (k in s.children ?: emptyList()) drawShape(canvas, k, u, side)
+        } else {
+            drawPlain(canvas, s, u, side)
+        }
+        canvas.restoreToCount(saved)
+    }
+
+    private fun drawPlain(canvas: Canvas, s: Sketch.Shape, u: Float, side: Float) {
+        applyStyle(s, u)
+        when (s.kind) {
+            Sketch.Kind.RECT -> {
+                val r = RectF(s.a * u, s.b * u, (s.a + s.c) * u, (s.b + s.d) * u)
+                canvas.drawRoundRect(r, 3f * u * 0.4f, 3f * u * 0.4f, fill)
+                canvas.drawRoundRect(r, 3f * u * 0.4f, 3f * u * 0.4f, stroke)
+                if (s.label.isNotEmpty()) drawFitted(canvas, s.label, r.centerX(), r.centerY(), r.width() - 4f * density, 3.6f * u)
+            }
+            Sketch.Kind.TRI -> {
+                val p = Path()
+                p.moveTo((s.a + s.c / 2) * u, s.b * u)
+                p.lineTo((s.a + s.c) * u, (s.b + s.d) * u)
+                p.lineTo(s.a * u, (s.b + s.d) * u)
+                p.close()
+                canvas.drawPath(p, fill)
+                canvas.drawPath(p, stroke)
+                if (s.label.isNotEmpty()) drawFitted(canvas, s.label, (s.a + s.c / 2) * u, (s.b + s.d * 0.7f) * u, s.c * u * 0.6f, 3.4f * u)
+            }
+            Sketch.Kind.CIRCLE -> {
+                canvas.drawCircle(s.a * u, s.b * u, s.c * u, fill)
+                canvas.drawCircle(s.a * u, s.b * u, s.c * u, stroke)
+                if (s.label.isNotEmpty()) drawFitted(canvas, s.label, s.a * u, s.b * u, s.c * u * 1.8f, 3.4f * u)
+            }
+            Sketch.Kind.ELLIPSE -> {
+                val r = RectF((s.a - s.c) * u, (s.b - s.d) * u, (s.a + s.c) * u, (s.b + s.d) * u)
+                canvas.drawOval(r, fill)
+                canvas.drawOval(r, stroke)
+                if (s.label.isNotEmpty()) drawFitted(canvas, s.label, s.a * u, s.b * u, s.c * u * 1.8f, 3.4f * u)
+            }
+            Sketch.Kind.PATH -> {
+                val segs = s.path
+                if (segs != null) {
+                    val p = buildPath(segs, u)
                     canvas.drawPath(p, fill)
                     canvas.drawPath(p, stroke)
-                    if (s.label.isNotEmpty()) drawFitted(canvas, s.label, (s.a + s.c / 2) * u, (s.b + s.d * 0.7f) * u, s.c * u * 0.6f, 3.4f * u)
                 }
-                Sketch.Kind.CIRCLE -> {
-                    canvas.drawCircle(s.a * u, s.b * u, s.c * u, fill)
-                    canvas.drawCircle(s.a * u, s.b * u, s.c * u, stroke)
-                    if (s.label.isNotEmpty()) drawFitted(canvas, s.label, s.a * u, s.b * u, s.c * u * 1.8f, 3.4f * u)
-                }
-                Sketch.Kind.ELLIPSE -> {
-                    val r = RectF((s.a - s.c) * u, (s.b - s.d) * u, (s.a + s.c) * u, (s.b + s.d) * u)
-                    canvas.drawOval(r, fill)
-                    canvas.drawOval(r, stroke)
-                    if (s.label.isNotEmpty()) drawFitted(canvas, s.label, s.a * u, s.b * u, s.c * u * 1.8f, 3.4f * u)
-                }
-                Sketch.Kind.PATH -> {
-                    val segs = s.path
-                    if (segs != null) {
-                        val p = buildPath(segs, u)
-                        canvas.drawPath(p, fill)
-                        canvas.drawPath(p, stroke)
-                    }
-                }
-                Sketch.Kind.POLY -> {
-                    val pts = s.points
-                    if (pts != null && pts.size >= 4) {
-                        val p = Path()
-                        p.moveTo(pts[0] * u, pts[1] * u)
-                        var i = 2
-                        while (i + 1 < pts.size) {
-                            p.lineTo(pts[i] * u, pts[i + 1] * u)
-                            i += 2
-                        }
-                        if (s.closed) {
-                            p.close()
-                            canvas.drawPath(p, fill)
-                        }
-                        canvas.drawPath(p, stroke)
-                    }
-                }
-                Sketch.Kind.LINE -> {
-                    canvas.drawLine(s.a * u, s.b * u, s.c * u, s.d * u, stroke)
-                    if (s.arrow) arrowHead(canvas, s.a * u, s.b * u, s.c * u, s.d * u, u)
-                    if (s.label.isNotEmpty()) drawFitted(canvas, s.label, (s.a + s.c) / 2 * u, (s.b + s.d) / 2 * u - 2f * u, 30f * u, 3.2f * u)
-                }
-                Sketch.Kind.TEXT -> drawFitted(canvas, s.label, s.a * u, s.b * u, side - 8f * density, 4.2f * u)
             }
+            Sketch.Kind.POLY -> {
+                val pts = s.points
+                if (pts != null && pts.size >= 4) {
+                    val p = Path()
+                    p.moveTo(pts[0] * u, pts[1] * u)
+                    var i = 2
+                    while (i + 1 < pts.size) {
+                        p.lineTo(pts[i] * u, pts[i + 1] * u)
+                        i += 2
+                    }
+                    if (s.closed) {
+                        p.close()
+                        canvas.drawPath(p, fill)
+                    }
+                    canvas.drawPath(p, stroke)
+                }
+            }
+            Sketch.Kind.LINE -> {
+                canvas.drawLine(s.a * u, s.b * u, s.c * u, s.d * u, stroke)
+                if (s.arrow) arrowHead(canvas, s.a * u, s.b * u, s.c * u, s.d * u, u)
+                if (s.label.isNotEmpty()) drawFitted(canvas, s.label, (s.a + s.c) / 2 * u, (s.b + s.d) / 2 * u - 2f * u, 30f * u, 3.2f * u)
+            }
+            Sketch.Kind.TEXT -> drawFitted(canvas, s.label, s.a * u, s.b * u, side - 8f * density, 4.2f * u)
+            Sketch.Kind.GROUP -> Unit // drawn by drawShape
         }
+        fill.shader = null
     }
 
     /** One line of text centred on (cx, cy), shrunk and then cut with "..." so it stays inside [maxWidth]. */

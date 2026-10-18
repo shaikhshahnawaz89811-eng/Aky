@@ -1393,3 +1393,215 @@ brace balance, existence of the drawables / colours used. Full file list and lim
 8. Tap **Stop** while the model works: the old drawing stays, the buttons come back.
 9. Rotate the phone while the model works: the screen does not restart and the answer still arrives.
 10. Send the result (and the CI log if the build fails): the next stage depends on it.
+
+# Sketch Studio, stage 3 (14 Oct 2026) - honest status
+
+Same sandbox as stages 1 and 2: **no Kotlin compiler, no Gradle, no Android SDK, no network. Never compiled, no unit test run, no lint run,
+never run on a phone.** Checked: a Python port of the arc maths, a Python port of `HtmlSandbox` (`extract` / `check` / `wrap` / `titleOf`) against the
+cases of `SketchStage3Test`, brace / parenthesis balance of every touched Kotlin file, a hand review of the Kotlin and of the tests.
+Full file list, safety notes and limits: `SKETCH_STUDIO.md` section 2c and "Known limits of stage 3".
+
+| Part | Status |
+|---|---|
+| Arcs in paths (`SvgPath.arcSegs`) | Written; the maths ran in a Python port; `SvgPathTest` written, not run |
+| Gradients, transforms, groups, hide: format, parser, SVG export (`Sketch`) | Written, `SketchStage3Test` written, not run |
+| Renderer for all of it (`SketchView`: shaders, `saveLayerAlpha`, rotation) | Written, needs device test |
+| Layers panel (`SketchLayers` + studio screen) | Logic written + tested on paper, screen needs device test |
+| 3 option (`SketchVariants`, `SketchGen.runVariants`, thumbnails in the studio) | Written, needs device test with Gemma (slow) |
+| Web designs (`HtmlSandbox`, `SketchGen.runPage`, `SketchWebHost`, `.html` share) | Written, needs device test; the WebView limits were never exercised |
+| 3D scene: kind, prompt, loader, WebGL probe, export | Written, needs device test |
+| **`three.min.js` itself** | **Not in the ZIP.** Add it to `app/src/main/assets/sketch/` (README there). Until then the 3D option refuses and says why |
+| Existing CI failures | **Investigated 16 Oct 2026** from `ci-reports.zip` of the stage 2 build: see "CI log of the stage 2 build" at the end. Stage 3 itself has not been through CI yet |
+
+Decisions worth knowing:
+- The chat sketch path (`ChatRunner.runSketch`) is untouched; only the studio prompts offer the new features (the phone model's context is small).
+- `SketchDesigns.Design` got two nullable fields. They are nullable on purpose: Gson fills a field that is missing in old saved data with null, not with the Kotlin default.
+- `SvgPathTest.arcsAreRefused...` (stage 1) and the arc line in `SketchStudioTest.aBadPathIsRefused...` were changed: arcs are accepted now.
+- Web designs run only inside `SketchWebHost`. If you change the WebView settings there, re-read the safety section of `SKETCH_STUDIO.md` first.
+
+## Phone check for stage 3 (about 20 minutes)
+
+1. CI first: push, run `android-build`, send the log if anything is red. Stage 3 adds new code on top of code that never compiled; do not skip this.
+2. Drawer > Sketch Studio > "+ Naya design": a list asks Chitra / Web design / 3D scene. The third line says "three.min.js nahi mila" until you add the file.
+3. Chitra: "raat ka aasman banao: chand, taare, pahaad", **Naya**. Tap **Layers**: rows appear, front first. Try Chhupao / Dikhao, the arrows, Copy, Group (a shape goes into a layer), tap a layer's name to rename. **Undo** brings every change back.
+4. **Badlo**: "chand par radial gradient lagao, pahaad ko 10 degree ghumao". Look for a smooth gradient and a turned shape. Menu > Share SVG file, open it in a browser: gradient direction and rotation should look the same as in the app.
+5. Type "ek jahaz banao", tap **3 option**: wait (up to a few minutes). Up to three thumbnails appear; **Ye lo** keeps one, **Undo** goes back. If fewer than three come, the status line says which reason.
+6. "+ Naya design" > Web design: "glass card wala login page, dark background", **Naya**. A page appears. **Badlo**: "button neela kar do". Undo / Redo re-run the page. The design's name becomes the page's title.
+7. Menu > Share HTML file: open the file in a browser, it should look the same.
+8. Limits: ask for a page that calls fetch("https://example.com"): the app should refuse it ("no network") and say so. Ask for a page with an endless `while(true){}` loop: it should freeze, then be closed within about 4 seconds with a note. Leave the screen and come back: the page resumes.
+9. 3D (after adding `three.min.js`): "+ Naya design" > 3D scene: "ghumta hua neela cube". A cube spins.
+10. 3D: if a line says WebGL does not work, send it. Watch battery and RAM for one minute with the cube running.
+11. 3D: Share HTML file, open it in a browser: the cube spins there too (the library is inside the file).
+12. Open a design made in stage 2 (before this update): it still opens as a drawing.
+13. Send the results (and the CI log if red).
+
+---
+
+# CI log of the stage 2 build (read 16 Oct 2026)
+
+Source: `ci-reports.zip` (`lint-results-debug.xml`, JUnit XML, HTML reports). It is the build of the **stage 2** code: there is no `SketchStage3Test` in it. So stage 1 and 2 compile, and stage 3 has still not been through a compiler.
+
+| Check | Result |
+|---|---|
+| Unit tests | **579 run, 0 failed, 0 errors, 0 skipped** (all test classes read from the XML) |
+| Lint (8.10.1) | **2 Errors**, 422 Warnings. The 2 Errors are why the job was red |
+| The 2 Errors | `MissingPermission` on `AudioRecord(...)` in `voice/BargeInDetector.kt:203` and `voice/VadGatedWakeWord.kt:286` (`open()` in each file caught only `Throwable`; lint wants `SecurityException` handled explicitly) |
+| Sketch files in lint | Warnings only (`UseKtx`, `SetTextI18n`, `ClickableViewAccessibility`); no Error |
+
+Fix (both files, same 3 lines): `open()` now has `catch (e: SecurityException) { throw e }` before `catch (_: Throwable)`, the pattern `voice/OfflineStt.kt` already uses (and passed lint with).
+Behaviour change, small and on purpose: a `SecurityException` from `AudioRecord` used to be swallowed (`open()` returned null, so the wake word showed "Mic abhi kisi aur ke paas hai" and retried). It now reaches the `catch (_: SecurityException)` that already sat around the call (wake word: "Mic permission nahi hai", barge-in: `onUnavailable`). These are device paths: no JVM test covers them, not run on a phone.
+The 422 warnings were not touched.
+
+---
+
+# Voice: wake word + offline recognizer + Gemma, continuous talk, stopping in between (16 Oct 2026)
+
+Asked: check that the wake word, the offline recognizer (sherpa) and Gemma work together, that continuous conversation goes on, and why
+the assistant stops "in between". Read: `VoiceController`, `WakeCoordinator`, `VadGatedWakeWord`, `OfflineStt`, `OfflineSttStore`, `BargeInDetector` (header only),
+`AssistantService`, `HomeFragment` (voice parts), `LocalLlm.checkMemory`. **Nothing here was compiled or run on a phone** (the CI log in hand is from the stage 2 build).
+
+## How they share the mic and the RAM (as the code is)
+- One mic owner at a time. `VoiceController.setState` calls `WakeCoordinator.setBusy(sessionActive)`; the wake engine stops its monitor and its recognizer while a voice turn,
+  a follow-up gap or a continuous conversation is open, and it resumes after the session ends. In `VadGatedWakeWord.fire` the wake recognizer is cancelled BEFORE `onWake`
+  is delivered, and `OfflineStt.openRecord` retries 4 times, so the hand-over wake -> offline recognizer is safe. No change needed there.
+- The wake engine uses the phone's on-device `SpeechRecognizer` (a language pack), not the sherpa model. The conversation uses sherpa when "offline" is selected. They never run at the same time.
+- Gemma is in the same process as the sherpa model (about 150-600 MB while loaded; it unloads itself 90 s after the last capture and reloads in the background when the mic opens).
+  Gemma is never generating while the mic is open in a voice turn, so there is no CPU fight between them. What is missing: nothing listened to Android's low-memory signal.
+
+## What stopped a conversation "in between", and the fix
+| # | Cause (found in the code) | Fix |
+|---|---|---|
+| 1 | Continuous mode ended after **3 empty rounds**. The offline recognizer gives up after 6 s per round, so ~18 s of thinking ended the conversation ("Kuch sunai nahi diya.") | Time based: the mic stays open until **2 minutes** with nobody speaking (`ConversationPolicy.CONTINUOUS_IDLE_MS`), message "Kaafi der se kuch nahi suna, mic band kar diya." |
+| 2 | A conversation opened by the **wake phrase** was always the short follow-up kind (8 s, or 20 s on "long"), even with mic mode "continuous" | `startFromWake`: with mic mode "continuous" the wake conversation is continuous too (`ConversationPolicy.wakeSessionIsContinuous`). Say "bas / ruko" or stay quiet for 2 minutes to end it |
+| 3 | A **false barge-in** (the assistant's own echo, a cough) stopped the reply, the mic then heard nothing, and the rest of the reply was thrown away | After 2.5 s without speech the rest of the reply is spoken again (`continueAfterFalseBarge`, max 2 times per reply, then barge-in is off for that reply). A real interruption is unchanged: the person is already speaking. New KPI `barge_resumed` |
+| 4 | With a wake window closing quietly while in continuous mode, `continuousOn` stayed true (mic idle, wake engine kept paused) | `quietEnd()` now also clears `continuousOn` (needed by fix 2) |
+| 5 | The wake phrase heard while Gemma was still answering a typed message was ignored with no sign | A short message: "Abhi jawab chal raha hai. Khatam hone par phir bolo." |
+| 6 | Nothing freed RAM when Android reported pressure, so the whole process (Gemma, wake service) could be the one killed | `MainActivity` and `AssistantService` `onTrimMemory(>= RUNNING_LOW)` call `OfflineSttStore.requestUnload()` (ignored while the mic is capturing) |
+
+Files: `voice/ConversationPolicy.kt` (new, pure), `voice/VoiceController.kt`, `home/HomeFragment.kt`, `MainActivity.kt`, `service/AssistantService.kt`, `ai/ConvKpi.kt`,
+`test/.../voice/ConversationPolicyTest.kt` (new, 8 tests). Not run: all of it.
+
+## Looked at and NOT changed (hypotheses, no evidence yet)
+- `focusLost()` ends a continuous conversation on any `AUDIOFOCUS_LOSS_TRANSIENT` while speaking. If some TTS engine takes audio focus for itself, that would stop the reply in the middle. Not seen in the code, so left alone; the KPI line "focus loss" in the same report counts how often it happens.
+- `HomeFragment` does not stop the voice session when the app goes to the background; Android blocks the mic for a non-foreground app, so a continuous conversation can go quiet after the screen turns off.
+- The TTS has no watchdog: if an engine dies without any callback the state stays SPEAKING until Stop is pressed.
+
+## Phone check for this change (10 minutes)
+1. In Voice and AI: mic mode **continuous**, offline recognizer selected, hands-free (wake word) on. Say the phrase, then a question. Gemma answers.
+2. Do not say anything for 30 seconds, then ask something: the conversation must still be open (before: it had ended). Stay quiet for 2 minutes: the mic closes with the new message.
+3. Say "bas" (or "ruko"): the conversation ends and the wake word works again after a moment.
+4. While the assistant is speaking a long reply, cough once or tap the table: the reply should pause, then go on by itself after about 3 seconds. Speak over it for real: it stops and listens.
+5. Settings > "Debug: conversation KPIs": look at the barge-in lines (`barge_resumed`, `barge_false`); the line "focus loss" is the audio-focus counter.
+6. Type a question, and while Gemma is still answering say the wake phrase: the short message appears.
+7. Open a few heavy apps, then come back: the app is still alive and Gemma still answers. Send the KPI report and what you saw.
+
+---
+
+# Net Search Agent, stage S1: foundations (17 Oct 2026)
+
+Plan: `Net_Search_Agent_Detailed_Research.pdf` (Phase 8, stage S1). **Nothing here is called from the chat flow yet**: no change to `ChatRunner`, `Store`, `Models`, `Prompts`, `ToolSpecs`, the layouts or the manifest. The app behaves exactly as before; the only new thing at runtime is `assets/eval_search.json` (a test data file, like `eval_multi.json`).
+**Nothing was compiled or run** (no Kotlin / Gradle in the sandbox; stage 3 and the ctx-budget fix are also still uncompiled, so S0 is still open). All new code is in the new package `com.codeassist.ai.search` and only reads `ai.ActionHint` and `ai.MemoryGuard`, so a compile error in it cannot come from, or spread into, the old code.
+
+## New files (main, `search/`)
+| File | What it is |
+|---|---|
+| `SearchTypes.kt` | `SearchKind` (the 16 request kinds of the audit table), `Freshness`, `SearchPlan`, Tavily answer types, typed `SearchFailure` / `SearchOutcome` (with the Hinglish user line of audit 6.4) |
+| `SearchIntent.kt` | Rule router (EN + Hinglish): `detect(text, prevWeb, forced)` gives a plan or null; also `cleanQuery`. No model, no network |
+| `QueryGuard.kt` | Last check before a query leaves the phone: blocks keys / card / PAN / "otp + digits", strips phone-like numbers (reuses `MemoryGuard`) |
+| `TavilyClient.kt` | `/search` and `/extract` over `HttpURLConnection` + Gson, injectable transport, typed errors (401, 429 + Retry-After, 432/433, 4xx, 5xx, offline, timeout, malformed, too big), 64 KB response cap, key only in the Bearer header |
+| `EvidenceBook.kt` | `Scrub` (HTML / links / invisible chars / brackets / angle brackets removed, instruction-like lines dropped) and `EvidenceBook` (dedupe by URL and headline, rank, date, pack to a character budget into a `<web_data>` block with `[n]` ids, no URLs inside) |
+| `CitationValidator.kt` | Keeps only real `[n]`, removes model-written links, requires a marker on sentences with numbers and checks each number is in the cited source, builds the Sources list from evidence |
+| `SearchBudget.kt` | Per-request cap, daily cap (default 30), settle with real `usage.credits`, per-turn duplicate suppression, "plan used up" until next month. State behind an interface (`BudgetState`); `InMemoryBudgetState` for tests |
+| `SearchCache.kt` | In-memory LRU + TTL cache, key = normalised query + kind + day (news-like) or week bucket |
+| `UrlTools.kt` | host, normalize (no tracking params / www / fragment), registrable domain (short suffix list, heuristic), same-site |
+
+Tests (`test/.../search/`): 119 new `@Test`, none skipped: `SearchIntentTest` (96 labelled phrases + plan checks), `SearchEvalAssetTest` (48 cases of `assets/eval_search.json`), `TavilyClientTest`, `EvidenceBookTest`, `CitationValidatorTest`, `QueryGuardTest`, `SearchBudgetTest`, `SearchCacheTest`, `UrlToolsTest`.
+
+## What was and was not checked
+- The router (`SearchIntent`), the validator (`CitationValidator`) and `QueryGuard` (+ `MemoryGuard`) were ported line by line to Python and run against the same tables the tests use: 96 router phrases, all validator cases, all QueryGuard cases matched. That proves the rules, not the Kotlin: a Kotlin typo or a Java-vs-Python regex difference is still possible.
+- `TavilyClientTest`, `EvidenceBookTest`, `UrlToolsTest`, `SearchBudgetTest`, `SearchCacheTest` were checked by hand only (expected values traced through the code).
+- Bracket balance of all 18 new Kotlin files was checked by a script. Not checked: types, imports, overloads, Gson / java.time calls.
+
+## Choices that go beyond or differ from the PDF
+- **`QueryGuard` is new** (the PDF only names `MemoryGuard.check` in flow step 4). `MemoryGuard` alone would block "best password manager" (word list), so the guard blocks on shapes and on a secret word WITH digits, and lets the words alone through.
+- **The router is deliberately shy.** Report needs an explicit web word (or the toggle); "latest" does not fire when the message has work words (`zip`, `project`, `bug`, `fix`, `error`, `code` ...); "naya / nayi / naye" are not news cues ("naya feature add karo" is a dev request); a comparison with a code word (`array vs list compare`) is not searched; phone actions never become searches, even with the Web toggle on; a message that is only a pasted link is not a search (read-this-link is a later feature).
+- Validator: single digits (0..9) without a unit are not checked (small models use them for counts). Known hole: "Gemma 4" vs "Gemma 3" is not caught by the number check.
+- Multi-kind plans add their credits (capped at 12, rounds = max); domain restriction is only set for single-kind plans.
+- `Tavily` `query` is cut at 400 characters: this is this app's own limit, not a number from the Tavily docs.
+
+## Not done (next)
+- **S0**: push, run CI, fix compile errors of stage 3 + ctx fix + this stage, pin `litertlm-android` (PLAN.md Phase 0). Do this first; S1 adds no behaviour, so it can ride along.
+- **S2**: key card, `Message.web`, `ChatRunner` flag, `SearchRunner`, compose with `Prompts.WEB_RULES`, source chips, KPIs, offline line (needs the S2 phone measurement of Gemma and `[n]` citations).
+
+## Check for this change (CI only, no phone step)
+1. `./gradlew testDebugUnitTest lintDebug`: expect 657 + 119 tests, 0 failed, 0 skipped (`scripts/ci_report.py` fails on a skip).
+2. If a `search/` test fails, send the red lines: they point at either a Kotlin typo or a rule to adjust (the labelled phrases are the spec).
+3. Phone: nothing to check (no behaviour change).
+
+
+---
+
+# Net Search Agent, stage S2: vertical slice, general + news (18 Oct 2026)
+
+Plan: `Net_Search_Agent_Detailed_Research.pdf` (Phase 8, stage S2), on top of `CodeAssistAI_search_S1.zip`. A message that asks for the net ("search karo", "google karo", "latest ... news", "gemma 4 ka latest version") now goes: search (Tavily) -> evidence packed to the model window -> answer written by the chosen brain from numbered sources -> checked by `CitationValidator` -> shown with tappable source chips. Everything else in the chat is unchanged.
+**Nothing was compiled or run** (no Kotlin / Gradle in the sandbox; stage 3, the ctx-budget fix and S1 are also still uncompiled, so S0 is still open). A compile error can therefore be in any of these files.
+
+## New files
+| File | What it is |
+|---|---|
+| `search/SearchPlanner.kt` | Pure rules for the rounds: which kinds this stage answers (`GENERAL`, `NEWS`, `VALUE`), first request, when a second (broader) round runs, stop reasons (enough sites, rounds, credits, deadline 45 s, nothing new). Max 2 credits a turn |
+| `search/WebGate.kt` | Pure gate of audit 6.1 steps 3-5: `Skip` (normal chat), `Say` (one line from the app, no model: no key, wrong key, plan used up, daily cap, offline, private text in the question), `Run` |
+| `search/SearchFlow.kt` | The blocking search loop with budget (charge before, settle with `usage.credits`), cache, one retry (429 waits at most 10 s, 5xx / timeout / network 1 s), refund rules, Stop polling, deadline. Provider call is injected |
+| `search/WebAnswer.kt` | System text, user turn (sources first, question last), evidence size for the model window (`evidenceChars`, `maxSources`), `finish()` = validator + app-written notes + `WebInfo` |
+| `search/WebInfo.kt` | `Message.web` as a JSON string (sources, credits, rounds, timings, flags), manual Gson `JsonObject` code, `parse` never throws |
+| `ai/SearchRunner.kt` | Android layer: gate inputs (settings, key, budget, connection), Tavily call inside `StepTimeout`, compose with Gemma or Gemini (no tools), message building, KPIs |
+
+## Changed files
+| File | Change |
+|---|---|
+| `ai/ChatRunner.kt` | One gate call after phone actions / plan / sketch, two `when` branches (`Say`, `Run`), `heavy` only when the gate said `Skip`. Nothing else |
+| `ai/LocalLlm.kt` | `chatSampled(..., temperature, onDelta)`; `chat(...)` now calls it with `DEFAULT_TEMPERATURE = 0.7` (same value as before), so old callers are untouched. Web answers use 0.25 |
+| `ai/Prompts.kt` | `WEB_RULES` constant (655 characters) |
+| `ai/ConvKpi.kt` | "Net search (stage S2)" section in the report + a checklist line (10 answers, 90% clean) |
+| `data/Store.kt` | `tavilyKey` (Keystore AES-GCM like `geminiKey`), `tavilyKeyStatus`, `hasTavilyKey()`, `webSearch` (on), `webDailyCap` (30), credit day / used / exhausted month |
+| `data/Models.kt` | `Message.web: String? = null` |
+| `chat/MessagesAdapter.kt`, `res/layout/item_msg_ai.xml` | Source chips under the text (one scrolling line, tap opens an https page, `purana` mark after 30 days) |
+| `settings/VoiceAiFragment.kt` | "Net search (Tavily)" card (add / test / change key, switch, daily cap 15-100, clear cache, remove key) + privacy text |
+| `search/EvidenceBook.kt` | `independentDomainCount()` |
+
+Tests (`test/.../search/`): 102 new `@Test`, none skipped: `SearchPlannerTest` 21, `WebGateTest` 20, `SearchFlowTest` 27, `WebAnswerTest` 26, `WebInfoTest` 8. Expected total: 657 + 119 + 102 = 878 (counted).
+
+## What was and was not checked
+- `CitationValidator` was ported to Python again and every `finish()` case of `WebAnswerTest` was run through it: all matched. The sizes in `WebAnswerTest` (`evidenceChars`, packed block vs `promptBudget(4096)`) and every `SearchFlowTest` / `SearchPlannerTest` / `WebGateTest` expectation were traced by hand through the code and through the S1 router tables.
+- Bracket / quote balance of all new and changed Kotlin files and the layout XML was checked by script. Names used from old code (`StepTimeout.Outcome`, `LocalLlm.loadedContext / backendName / Reply`, `GeminiClient.stream / Turn / ApiError`, `Run` fields, `ReplyGuard`, `Store` fields) were looked up in the source.
+- **Not checked:** types, imports, generics, overloads; `SamplerConfig(temperature = Double)` (assumed from the old literal `0.7`); Gemma 4 E2B speed and whether it writes `[n]` markers reliably (the S2 phone measurement below decides).
+
+## Choices that differ from, or go beyond, the PDF
+- **`VALUE` (price / version / size questions) is answered by the same flow as general.** The PDF lists general + news only, but "gemma 4 ka latest version" is the most common cue and model memory would invent a number; the number-in-source check of the validator is the control. No GitHub / vendor-page preference and no region or currency line yet (S3). To take it out: one line, `SearchPlanner.SUPPORTED`.
+- Every other kind (official link, download, direct file, compare, image, video, paper, site, report, fact-check, follow-up) goes the normal chat way and is counted (`web_skip_kind`). A "follow-up" after a web answer is therefore a normal Gemma answer until S4.
+- **At most 2 credits a turn** (the VALUE plan says 3): the S2 acceptance says <= 2.
+- **No composer "Web" toggle**: it would touch the chat box. Settings > Net search has an on/off switch instead; a clear cue is needed to search.
+- **Voice messages never search** (a spoken reply with sources does not fit); messages with attachments never search.
+- **No unchecked text on screen or disk.** The PDF says "stream into run.text"; here the label counts characters ("Jawab likh raha hoon (120 akshar)") and the text appears after the validator. Stop during writing therefore stores nothing, but the search answer stays in the cache, so asking again costs 0 credits.
+- **No link in the stored text.** The PDF has the app append a Sources list; here the sources live only in `Message.web` and show as chips, so the chat history that goes back to the model has no URLs.
+- Writing the answer uses no chat history and no persona / memory facts: the question stands alone (follow-ups are S4), the evidence gets the room.
+- A provider failure shows one honest line (key wrong, plan used up, timeout ...); it does NOT fall back to an answer from model memory (PDF 6.4 suggests "not verified" label for 432 / 433). The next turns get the "plan used up" line from the gate.
+- If the sources are found but the answer cannot be written (model error, empty text), the message says so and still shows the sources.
+- Gemini writes the answer with the plain stream (no tools), temperature <= 0.3; if it fails and "automatic fallback" is on and Gemma is installed, Gemma writes it.
+- "Clear web history" is "Search cache saaf karo" (the in-memory cache); sources in chats go when the chat is deleted.
+- The settings "Test key" search costs 1 credit and is counted in today's total.
+- Refund rule: a failed call that did not reach billing (offline, 401, 429, 432 / 433, other 4xx, 5xx) gives its credit back; a timeout / network error / malformed answer keeps it (the provider may have run the search).
+- Offline check = the phone has a network with INTERNET capability (not "validated"), so captive / odd networks are not called offline by mistake.
+
+## Not done (next)
+- **S0 first**: push, run CI, fix compile errors of stage 3 + ctx fix + S1 + S2, pin `litertlm-android`.
+- Extract (page text) is not used: snippets only.
+- S3 links / downloads, S4 follow-ups and compare, S5-S7 as in the table.
+
+## Check for this change
+1. CI: `./gradlew testDebugUnitTest lintDebug`: expect 878 tests, 0 failed, 0 skipped. Send the red lines if any.
+2. Phone, 10 minutes. Settings > Voice and AI > Net search: add a Tavily key (free account), press Save and test (1 credit): badge turns Verified.
+3. Ask 10 things, mix: 3 news ("latest AI news", "aaj ki khabar batao", "ipl score today"), 3 general with "search karo / google karo", 2 value ("gemma 4 ka latest version search karo", "iphone 16 price search karo"), 2 plain chat ("hello", "torch on karo"). Expect: the first 8 show source chips and `[n]` marks, no link in the text, caption "... web N credit Ns"; the last 2 behave as before (no search, torch works).
+4. Press Stop while it says "Web: search" and while it writes: it stops in about a second, nothing half-written is saved.
+5. Airplane mode + "latest AI news": one line "Internet nahi mil raha ...". Wrong key (change one letter) + "search karo ...": "key galat" line, badge Invalid.
+6. Send the KPI report ("Net search (stage S2)" block: credits, rounds, clean / total, lang retry) and tell me how many of the 8 answers had a wrong or missing `[n]`: below 80% clean means Gemma is not good enough at the format and the answer should be written by Gemini or shown as sources only (PDF risk of S2).

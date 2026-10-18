@@ -22,13 +22,18 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.codeassist.ai.R
+import com.codeassist.ai.ai.HtmlSandbox
 import com.codeassist.ai.ai.Sketch
 import com.codeassist.ai.ai.SketchDesigns
 import com.codeassist.ai.ai.SketchGen
 import com.codeassist.ai.ai.SketchHistory
+import com.codeassist.ai.ai.SketchLayers
+import com.codeassist.ai.ai.SketchVariants
 import com.codeassist.ai.data.Store
 import com.codeassist.ai.ui.SketchFiles
 import com.codeassist.ai.ui.SketchView
+import com.codeassist.ai.ui.SketchWebHost
+import com.codeassist.ai.ui.ThreeLib
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -47,6 +52,10 @@ import kotlinx.coroutines.launch
  *  - EDITOR: the drawing on an interactive [SketchView] (pinch-zoom, one-finger pan, double-tap resets), undo / redo
  *    ([SketchHistory]), a prompt field with two buttons: "Naya" (new drawing from the text) and "Badlo" (change the CURRENT
  *    drawing, the stage 1 edit prompt), Stop while the model works, and the SVG / PNG file export ([SketchFiles]).
+ * Stage 3 adds: a LAYERS panel (show / hide, order, duplicate, remove, group, rename - [SketchLayers]), "3 option" (three drawings
+ * of one request, pick one - [SketchVariants] / [SketchGen.runVariants]) and WEB designs: a design can also be an HTML / CSS / JS
+ * page or a Three.js scene, run in a locked-down WebView ([SketchWebHost], rules in [HtmlSandbox]). Web designs use the same
+ * undo / redo, rename / duplicate / delete and file share (.html); layers, zoom and "3 option" belong to drawings only.
  * Every accepted drawing is saved at once ([Store.saveSketchDesigns]); undo / redo are saved too. The model call is [SketchGen]
  * (offline Gemma only). Pure logic (list operations, history, zoom maths) is in [SketchDesigns] and covered by JVM tests; this
  * class itself has never been compiled or run (BUILD_NOTES, Sketch Studio stage 2).
@@ -88,7 +97,10 @@ class SketchStudioActivity : AppCompatActivity() {
     private var runId = 0
 
     private var openId: String? = null
+    private var openKind: String = SketchDesigns.KIND_SKETCH
     private var history: SketchHistory? = null
+
+    private val isWebOpen: Boolean get() = openKind != SketchDesigns.KIND_SKETCH
 
     private lateinit var listPane: LinearLayout
     private lateinit var listBody: LinearLayout
@@ -104,6 +116,13 @@ class SketchStudioActivity : AppCompatActivity() {
     private lateinit var newBtn: TextView
     private lateinit var editBtn: TextView
     private lateinit var stopBtn: TextView
+    private lateinit var webHost: SketchWebHost
+    private lateinit var helpView: TextView
+    private lateinit var layersBtn: TextView
+    private lateinit var variantsBtn: TextView
+    private lateinit var runBtn: TextView
+    private lateinit var layersBox: LinearLayout
+    private lateinit var variantsBox: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,9 +152,20 @@ class SketchStudioActivity : AppCompatActivity() {
         if (wanted != null && SketchDesigns.find(Store.sketchDesigns(), wanted) != null) openDesign(wanted) else showList()
     }
 
+    override fun onPause() {
+        webHost.pause()
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webHost.resume()
+    }
+
     override fun onDestroy() {
         cancelled = true
         scope.cancel()
+        webHost.stop()
         super.onDestroy()
     }
 
@@ -200,7 +230,10 @@ class SketchStudioActivity : AppCompatActivity() {
 
     private fun showList() {
         openId = null
+        openKind = SketchDesigns.KIND_SKETCH
         history = null
+        webHost.stop()
+        hideVariants()
         editorPane.visibility = View.GONE
         listPane.visibility = View.VISIBLE
         refreshList()
@@ -232,18 +265,34 @@ class SketchStudioActivity : AppCompatActivity() {
             isFocusable = true
             setOnClickListener { openDesign(d.id) }
         }
-        val preview = SketchView(this).apply {
-            emptyHint = "Khali"
-            setDrawing(Sketch.fromJson(d.json))
+        if (SketchDesigns.isWeb(d)) {
+            val badge = text(SketchDesigns.badge(d), 18f, R.color.text2, true).apply {
+                gravity = Gravity.CENTER
+                setBackgroundResource(R.drawable.glass_chip)
+            }
+            row.addView(badge, LinearLayout.LayoutParams(dp(72), dp(72)))
+        } else {
+            val preview = SketchView(this).apply {
+                emptyHint = "Khali"
+                setDrawing(Sketch.fromJson(d.json))
+            }
+            row.addView(preview, LinearLayout.LayoutParams(dp(72), dp(72)))
         }
-        row.addView(preview, LinearLayout.LayoutParams(dp(72), dp(72)))
         val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         info.addView(text(d.title, 15f, R.color.text1, true).apply {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         })
-        val shapes = Sketch.fromJson(d.json)?.shapes?.size
-        val shapesText = if (d.json.isBlank()) "khali" else if (shapes == null) "padha nahi ja saka" else "$shapes shapes"
+        val shapes = Sketch.fromJson(d.json)?.let { Sketch.shapeCount(it) }
+        val shapesText = if (SketchDesigns.isWeb(d)) {
+            "web page \u00B7 " + HtmlSandbox.summary(SketchDesigns.htmlOf(d))
+        } else if (d.json.isBlank()) {
+            "khali"
+        } else if (shapes == null) {
+            "padha nahi ja saka"
+        } else {
+            "$shapes shapes"
+        }
         info.addView(text(shapesText + " · " + SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()).format(Date(d.updated)), 12f, R.color.text3))
         row.addView(info, LinearLayout.LayoutParams(0, wrap, 1f).apply { marginStart = dp(12) })
         val more = button("\u22EE", R.drawable.circle_btn) { }
@@ -253,7 +302,32 @@ class SketchStudioActivity : AppCompatActivity() {
     }
 
     private fun newDesign() {
-        val d = SketchDesigns.newDesign(null, "", System.currentTimeMillis())
+        val three = ThreeLib.available(this)
+        val labels = arrayOf(
+            "Chitra (SVG: zoom, layers, 3 option)",
+            "Web design (HTML / CSS / JS)",
+            if (three) "3D scene (Three.js)" else "3D scene (three.min.js nahi mila)"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Kaisa design?")
+            .setItems(labels) { _, which ->
+                when (which) {
+                    0 -> createDesign(SketchDesigns.KIND_SKETCH)
+                    1 -> createDesign(SketchDesigns.KIND_HTML)
+                    else -> if (three) {
+                        createDesign(SketchDesigns.KIND_HTML3D)
+                    } else {
+                        toast("3D ke liye assets/sketch/three.min.js rakho (assets/sketch/README.txt dekho), phir app dobara banao.")
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun createDesign(kind: String) {
+        val now = System.currentTimeMillis()
+        val d = if (kind == SketchDesigns.KIND_SKETCH) SketchDesigns.newDesign(null, "", now) else SketchDesigns.newWebDesign(null, kind, now)
         val next = SketchDesigns.add(Store.sketchDesigns(), d)
         if (next == null) {
             toast("" + SketchDesigns.MAX_DESIGNS + " design ho gaye. Pehle kuch delete karo.")
@@ -318,8 +392,44 @@ class SketchStudioActivity : AppCompatActivity() {
         }
         body.addView(canvas, LinearLayout.LayoutParams(match, wrap))
 
+        webHost = SketchWebHost(this).apply {
+            visibility = View.GONE
+            setBackgroundResource(R.drawable.glass_card_16)
+            onNote = { line -> status.text = line }
+            onWebGl = { ok -> if (!ok) status.text = "Is phone ke WebView me WebGL nahi chal raha: 3D scene nahi dikhega." }
+        }
+        body.addView(webHost, LinearLayout.LayoutParams(match, dp(480)))
+
         status = text("", 12f, R.color.text2)
         body.addView(status, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+
+        // stage 3: the three answers of "3 option" (hidden until a run has finished)
+        variantsBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        body.addView(variantsBox, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+
+        // stage 3: layers + 3 option for drawings, Run / Stop for web designs
+        val extras = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        layersBtn = button("Layers", R.drawable.glass_chip) { toggleLayers() }
+        variantsBtn = button("3 option", R.drawable.glass_chip) { startVariants() }
+        runBtn = button("Page band karo", R.drawable.glass_chip) { toggleRun() }.apply { visibility = View.GONE }
+        extras.addView(layersBtn)
+        extras.addView(variantsBtn, LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = dp(8) })
+        extras.addView(runBtn)
+        body.addView(extras, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
+
+        layersBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setBackgroundResource(R.drawable.glass_card_16)
+        }
+        body.addView(layersBox, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
 
         prompt = EditText(this).apply {
             hint = "Jaise: ek ghar banao  /  background dark kar do"
@@ -345,14 +455,39 @@ class SketchStudioActivity : AppCompatActivity() {
         actions.addView(stopBtn, LinearLayout.LayoutParams(0, wrap, 1f).apply { marginStart = dp(8) })
         body.addView(actions, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(10) })
 
-        body.addView(
-            text(
-                "Naya = text se naya chitra (purana undo se wapas aa sakta hai). Badlo = abhi wale chitra me badlav. " +
-                    "Do ungli se zoom, ek ungli se khiskao, do baar tap = reset. Sirf phone ka Gemma chalta hai (offline).",
-                12f, R.color.text3
-            ),
-            LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(12) }
-        )
+        helpView = text("", 12f, R.color.text3)
+        body.addView(helpView, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(12) })
+    }
+
+    private val sketchHelp =
+        "Naya = text se naya chitra (purana undo se wapas aa sakta hai). Badlo = abhi wale chitra me badlav. " +
+            "3 option = ek hi baat ke 3 alag chitra, ek chuno. Layers = dikhao / chhupao, aage-peechhe, copy, group. " +
+            "Do ungli se zoom, ek ungli se khiskao, do baar tap = reset. Sirf phone ka Gemma chalta hai (offline)."
+
+    private val webHelp =
+        "Naya = text se naya page. Badlo = abhi wale page me badlav (page 3,500 akshar se bada ho to nahi). " +
+            "Page sirf apne andar chalta hai: internet nahi, dusre page nahi, app se koi sambandh nahi; atak jaye to 4 second me band, " +
+            "10 minute baad apne aap band. Share HTML file menu me hai. Sirf phone ka Gemma chalta hai (offline)."
+
+    /** Shows the controls that belong to the kind of the open design (drawing or web page) and hides the others. */
+    private fun applyKindUi() {
+        val web = isWebOpen
+        canvas.visibility = if (web) View.GONE else View.VISIBLE
+        webHost.visibility = if (web) View.VISIBLE else View.GONE
+        zoomText.visibility = if (web) View.GONE else View.VISIBLE
+        layersBtn.visibility = if (web) View.GONE else View.VISIBLE
+        variantsBtn.visibility = if (web) View.GONE else View.VISIBLE
+        runBtn.visibility = if (web) View.VISIBLE else View.GONE
+        layersBox.visibility = View.GONE
+        hideVariants()
+        helpView.text = if (web) webHelp else sketchHelp
+        prompt.hint = if (web) {
+            if (openKind == SketchDesigns.KIND_HTML3D) "Jaise: ghumta hua neela cube  /  cube ko laal kar do"
+            else "Jaise: glass card wala login page  /  button ka rang neela kar do"
+        } else {
+            "Jaise: ek ghar banao  /  background dark kar do"
+        }
+        runBtn.text = if (webHost.isRunning) "Page band karo" else "Page chalao"
     }
 
     private fun openDesign(id: String) {
@@ -363,17 +498,27 @@ class SketchStudioActivity : AppCompatActivity() {
             return
         }
         cancelRun()
+        webHost.stop()
         openId = id
-        history = SketchHistory(d.json)
+        openKind = SketchDesigns.kindOf(d)
+        val content = SketchDesigns.contentOf(d)
+        history = SketchHistory(content)
         titleView.text = d.title
-        val drawing = if (d.json.isBlank()) null else Sketch.fromJson(d.json)
-        canvas.setDrawing(drawing)
-        canvas.resetZoom()
-        status.text = if (d.json.isNotBlank() && drawing == null) "Ye design padha nahi ja saka." else ""
+        applyKindUi()
         prompt.setText("")
+        if (isWebOpen) {
+            status.text = ""
+            canvas.setDrawing(null)
+        } else {
+            val drawing = if (content.isBlank()) null else Sketch.fromJson(content)
+            canvas.setDrawing(drawing)
+            canvas.resetZoom()
+            status.text = if (content.isNotBlank() && drawing == null) "Ye design padha nahi ja saka." else ""
+        }
         setBusy(false)
         listPane.visibility = View.GONE
         editorPane.visibility = View.VISIBLE
+        if (isWebOpen && content.isNotBlank()) runPage(content)
         updateButtons()
     }
 
@@ -390,6 +535,8 @@ class SketchStudioActivity : AppCompatActivity() {
     private fun setBusy(busy: Boolean) {
         setEnabledLook(newBtn, !busy)
         setEnabledLook(editBtn, !busy)
+        setEnabledLook(variantsBtn, !busy)
+        setEnabledLook(layersBtn, !busy)
         prompt.isEnabled = !busy
         stopBtn.visibility = if (busy) View.VISIBLE else View.GONE
     }
@@ -403,9 +550,14 @@ class SketchStudioActivity : AppCompatActivity() {
             toast("Pehle likho ki kya banana ya badalna hai.")
             return
         }
+        if (isWebOpen) {
+            startPageRun(edit, request)
+            return
+        }
         val current = history?.current.orEmpty()
         // "Badlo" on an empty canvas is just a new drawing
         val previous = if (edit && current.isNotBlank()) current else null
+        hideVariants()
         cancelled = false
         val mine = ++runId
         status.text = "Shuru ho raha hai..."
@@ -432,6 +584,255 @@ class SketchStudioActivity : AppCompatActivity() {
             setBusy(false)
             updateButtons()
         }
+    }
+
+    /** Web designs: write ([edit] = false) or change ([edit] = true) the page, then run it. */
+    private fun startPageRun(edit: Boolean, request: String) {
+        val three = openKind == SketchDesigns.KIND_HTML3D
+        if (three && !ThreeLib.available(this)) {
+            status.text = "3D ke liye assets/sketch/three.min.js chahiye (assets/sketch/README.txt dekho)."
+            return
+        }
+        val current = history?.current.orEmpty()
+        val previous = if (edit && current.isNotBlank()) current else null
+        cancelled = false
+        val mine = ++runId
+        status.text = "Shuru ho raha hai..."
+        setBusy(true)
+        updateButtons()
+        job = scope.launch {
+            val result: SketchGen.PageResult? = try {
+                SketchGen.runPage(request, previous, three, { cancelled }) { line -> status.text = line }
+            } catch (e: CancellationException) {
+                null
+            }
+            if (mine != runId) return@launch
+            when (result) {
+                null -> status.text = "Roka gaya. Page waisa hi hai."
+                is SketchGen.PageResult.Fail -> status.text = result.message
+                is SketchGen.PageResult.Ok -> {
+                    history?.push(result.html)
+                    persist(result.html, HtmlSandbox.titleOf(result.html))
+                    runPage(result.html)
+                    // runPage may have written its own line (library missing); keep it, else show the caption
+                    if (status.text.isNullOrEmpty()) status.text = result.caption
+                    if (previous != null) prompt.setText("")
+                }
+            }
+            setBusy(false)
+            updateButtons()
+        }
+    }
+
+    /** Runs [html] in the sandbox (the 3D library is put in front when the page uses THREE). */
+    private fun runPage(html: String) {
+        status.text = ""
+        var three: String? = null
+        if (HtmlSandbox.usesThree(html)) {
+            three = ThreeLib.load(this)
+            if (three == null) {
+                webHost.stop()
+                status.text = "Ye page Three.js maangta hai: assets/sketch/three.min.js nahi mila (assets/sketch/README.txt dekho)."
+                runBtn.text = "Page chalao"
+                return
+            }
+        }
+        webHost.show(HtmlSandbox.wrap(html, three))
+        runBtn.text = "Page band karo"
+    }
+
+    private fun toggleRun() {
+        if (!isWebOpen) return
+        if (webHost.isRunning) {
+            webHost.stop()
+            runBtn.text = "Page chalao"
+            return
+        }
+        val html = history?.current.orEmpty()
+        if (html.isBlank()) {
+            toast("Abhi page nahi hai. Neeche likho aur Naya dabao.")
+            return
+        }
+        runPage(html)
+    }
+
+    // ---------- 3 option (variations) ----------
+
+    private fun hideVariants() {
+        if (::variantsBox.isInitialized) {
+            variantsBox.removeAllViews()
+            variantsBox.visibility = View.GONE
+        }
+    }
+
+    private fun startVariants() {
+        if (openId == null || isWebOpen || job?.isActive == true) return
+        val request = prompt.text.toString().trim()
+        if (request.isEmpty()) {
+            toast("Pehle likho ki kya banana hai.")
+            return
+        }
+        hideVariants()
+        cancelled = false
+        val mine = ++runId
+        status.text = "Shuru ho raha hai..."
+        setBusy(true)
+        updateButtons()
+        job = scope.launch {
+            val result: SketchGen.VariantsResult? = try {
+                SketchGen.runVariants(request, { cancelled }) { line -> status.text = line }
+            } catch (e: CancellationException) {
+                null
+            }
+            if (mine != runId) return@launch
+            when (result) {
+                null -> status.text = "Roka gaya. Chitra waisa hi hai."
+                is SketchGen.VariantsResult.Fail -> status.text = result.message
+                is SketchGen.VariantsResult.Ok -> {
+                    showVariants(result.items)
+                    status.text = result.caption + " \u00B7 ek chuno (chitra abhi waisa hi hai)"
+                }
+            }
+            setBusy(false)
+            updateButtons()
+        }
+    }
+
+    private fun showVariants(items: List<SketchVariants.Candidate>) {
+        variantsBox.removeAllViews()
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (c in items) {
+            val col = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            val thumb = SketchView(this).apply {
+                maxSideDp = 160
+                setDrawing(c.drawing)
+            }
+            col.addView(thumb, LinearLayout.LayoutParams(match, wrap))
+            col.addView(text(SketchVariants.label(c.index) + " \u00B7 " + Sketch.shapeCount(c.drawing) + " shapes", 11f, R.color.text3))
+            col.addView(button("Ye lo", R.drawable.btn_primary) { applyVariant(c) }, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) })
+            row.addView(col, LinearLayout.LayoutParams(0, wrap, 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        }
+        variantsBox.addView(row, LinearLayout.LayoutParams(match, wrap))
+        variantsBox.addView(
+            button("Band karo", R.drawable.glass_chip) { hideVariants() },
+            LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) }
+        )
+        variantsBox.visibility = View.VISIBLE
+    }
+
+    private fun applyVariant(c: SketchVariants.Candidate) {
+        if (job?.isActive == true) return
+        history?.push(c.json)
+        canvas.setDrawing(c.drawing)
+        persist(c.json, c.drawing.title)
+        hideVariants()
+        status.text = SketchVariants.label(c.index) + " chuna"
+        if (layersBox.visibility == View.VISIBLE) refreshLayers()
+        updateButtons()
+    }
+
+    // ---------- layers ----------
+
+    private fun currentDrawing(): Sketch.Drawing? {
+        val json = history?.current.orEmpty()
+        return if (json.isBlank()) null else Sketch.fromJson(json)
+    }
+
+    private fun toggleLayers() {
+        if (isWebOpen) return
+        if (layersBox.visibility == View.VISIBLE) {
+            layersBox.visibility = View.GONE
+        } else {
+            refreshLayers()
+            layersBox.visibility = View.VISIBLE
+        }
+    }
+
+    private fun miniButton(label: String, onClick: () -> Unit): TextView = button(label, R.drawable.glass_chip, onClick).apply {
+        textSize = 12f
+        setPadding(dp(8), dp(6), dp(8), dp(6))
+    }
+
+    private fun refreshLayers() {
+        layersBox.removeAllViews()
+        val d = currentDrawing()
+        if (d == null) {
+            layersBox.addView(text("Abhi koi chitra nahi. Pehle Naya dabao.", 12f, R.color.text3))
+            return
+        }
+        layersBox.addView(text("Layers (upar wali sabse aage)", 12f, R.color.text2, true))
+        for (row in SketchLayers.rows(d)) layersBox.addView(layerRow(d, row), LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
+        if (SketchLayers.allHidden(d)) layersBox.addView(text("Sab layers chhupi hain, isliye chitra khali dikhta hai.", 12f, R.color.text3))
+    }
+
+    private fun layerRow(d: Sketch.Drawing, row: SketchLayers.Row): View {
+        val line = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val title = text(row.title, 13f, if (row.hidden) R.color.text3 else R.color.text1).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            if (row.isGroup) setOnClickListener { renameLayerDialog(row.index) }
+        }
+        line.addView(title, LinearLayout.LayoutParams(0, wrap, 1f))
+        val gap = { LinearLayout.LayoutParams(wrap, wrap).apply { marginStart = dp(4) } }
+        line.addView(miniButton(if (row.hidden) "Dikhao" else "Chhupao") {
+            applyLayers(SketchLayers.toggleHidden(d, row.index), "Ye layer badli nahi ja saki.")
+        }, gap())
+        line.addView(miniButton("\u25B2") { applyLayers(SketchLayers.moveForward(d, row.index), "Ye pehle se sabse aage hai.") }, gap())
+        line.addView(miniButton("\u25BC") { applyLayers(SketchLayers.moveBack(d, row.index), "Ye pehle se sabse peechhe hai.") }, gap())
+        line.addView(miniButton("Copy") { applyLayers(SketchLayers.duplicate(d, row.index), "Copy nahi ho payi (shapes ki limit).") }, gap())
+        if (!row.isGroup) {
+            line.addView(miniButton("Group") {
+                val n = d.shapes.count { it.kind == Sketch.Kind.GROUP } + 1
+                applyLayers(SketchLayers.groupOne(d, row.index, "layer $n"), "Group nahi ban paya.")
+            }, gap())
+        }
+        line.addView(miniButton("\u2715") {
+            applyLayers(SketchLayers.remove(d, row.index), "Aakhri layer hata nahi sakte (Undo ya Naya use karo).")
+        }, gap())
+        return line
+    }
+
+    /** Takes the result of a [SketchLayers] operation: null = refused (toast [fail]), else it becomes the new state. */
+    private fun applyLayers(next: Sketch.Drawing?, fail: String) {
+        if (job?.isActive == true) return
+        if (next == null) {
+            toast(fail)
+            return
+        }
+        val json = Sketch.toJson(next)
+        if (json.length > Sketch.MAX_JSON) {
+            toast("Chitra bahut bada ho jayega, ye badlav nahi ho sakta.")
+            return
+        }
+        history?.push(json)
+        canvas.setDrawing(next)
+        persist(json)
+        refreshLayers()
+        updateButtons()
+    }
+
+    private fun renameLayerDialog(index: Int) {
+        val d = currentDrawing() ?: return
+        val shape = d.shapes.getOrNull(index) ?: return
+        val input = EditText(this).apply {
+            setText(shape.label)
+            setSelection(text.length)
+            setSingleLine(true)
+            setTextColor(color(R.color.text1))
+            filters = arrayOf(InputFilter.LengthFilter(24))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Layer ka naam")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ -> applyLayers(SketchLayers.renameGroup(d, index, input.text.toString()), "Naam nahi badla ja saka.") }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun cancelRun() {
@@ -473,9 +874,20 @@ class SketchStudioActivity : AppCompatActivity() {
     }
 
     private fun showState(json: String) {
-        canvas.setDrawing(if (json.isBlank()) null else Sketch.fromJson(json))
+        if (isWebOpen) {
+            if (json.isBlank()) {
+                webHost.stop()
+                runBtn.text = "Page chalao"
+            } else {
+                runPage(json)
+            }
+        } else {
+            canvas.setDrawing(if (json.isBlank()) null else Sketch.fromJson(json))
+            hideVariants()
+            if (layersBox.visibility == View.VISIBLE) refreshLayers()
+        }
         persist(json)
-        status.text = ""
+        if (!isWebOpen) status.text = ""
         updateButtons()
     }
 
@@ -485,7 +897,13 @@ class SketchStudioActivity : AppCompatActivity() {
 
     private fun showMenu(anchor: View, id: String) {
         val popup = PopupMenu(this, anchor)
-        val items = listOf("Naam badlo", "Duplicate", "Share SVG file", "Share PNG", "Copy SVG text", "Delete")
+        val design = SketchDesigns.find(Store.sketchDesigns(), id)
+        val web = design != null && SketchDesigns.isWeb(design)
+        val items = if (web) {
+            listOf("Naam badlo", "Duplicate", "Share HTML file", "Copy HTML text", "Delete")
+        } else {
+            listOf("Naam badlo", "Duplicate", "Share SVG file", "Share PNG", "Copy SVG text", "Delete")
+        }
         for (label in items) popup.menu.add(label)
         popup.setOnMenuItemClickListener { item ->
             when (item.title.toString()) {
@@ -494,11 +912,37 @@ class SketchStudioActivity : AppCompatActivity() {
                 "Share SVG file" -> drawingOf(id)?.let { SketchFiles.shareSvg(this, it) } ?: toast("Khali canvas hai, pehle kuch banao.")
                 "Share PNG" -> drawingOf(id)?.let { SketchFiles.sharePng(this, it) } ?: toast("Khali canvas hai, pehle kuch banao.")
                 "Copy SVG text" -> drawingOf(id)?.let { copySvg(it) } ?: toast("Khali canvas hai, pehle kuch banao.")
+                "Share HTML file" -> shareHtml(id)
+                "Copy HTML text" -> copyHtml(id)
                 "Delete" -> confirmDelete(id)
             }
             true
         }
         popup.show()
+    }
+
+    private fun pageOf(id: String): SketchDesigns.Design? =
+        SketchDesigns.find(Store.sketchDesigns(), id)?.takeIf { SketchDesigns.isWeb(it) && SketchDesigns.htmlOf(it).isNotBlank() }
+
+    private fun shareHtml(id: String) {
+        val d = pageOf(id)
+        if (d == null) {
+            toast("Khali page hai, pehle kuch banao.")
+            return
+        }
+        val html = SketchDesigns.htmlOf(d)
+        SketchFiles.shareHtml(this, d.title, html, if (HtmlSandbox.usesThree(html)) ThreeLib.load(this) else null)
+    }
+
+    private fun copyHtml(id: String) {
+        val d = pageOf(id)
+        if (d == null) {
+            toast("Khali page hai, pehle kuch banao.")
+            return
+        }
+        (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+            .setPrimaryClip(ClipData.newPlainText("HTML", SketchDesigns.htmlOf(d)))
+        toast("HTML copy ho gaya")
     }
 
     private fun copySvg(d: Sketch.Drawing) {

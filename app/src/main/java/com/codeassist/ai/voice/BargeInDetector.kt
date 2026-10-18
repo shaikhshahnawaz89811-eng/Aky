@@ -205,6 +205,9 @@ class BargeInDetector(
                 r.release()
                 null
             }
+        } catch (e: SecurityException) {
+            // no RECORD_AUDIO: pass it to the caller's SecurityException handler (lint MissingPermission wants it handled explicitly)
+            throw e
         } catch (_: Throwable) {
             null
         }

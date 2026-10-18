@@ -111,6 +111,7 @@ object ConvKpi {
             sb.append(String.format(Locale.US, " = %.1f per 50 turns  (target <= 1)", falseB * 50.0 / speaking))
         }
         sb.append("\n")
+        sb.append("  false barge-in ke baad jawab aage bola gaya: ").append(get("barge_resumed")).append("\n")
 
         val guard = get("endpoint_guard")
         val saved = get("endpoint_saved")
@@ -232,6 +233,36 @@ object ConvKpi {
             .append(" · \"skills\" par sawaal: ").append(get("sk_clarify"))
             .append(" · badlav (edit) maange: ").append(get("sk_edit")).append("\n")
         sb.append("  Studio screen se (stage 2) maange: ").append(get("sk_studio")).append("\n")
+        sb.append("  Studio stage 3: 3 option maange: ").append(get("sk_variants")).append(" \u00B7 web page / 3D maange: ").append(get("sk_web")).append("\n")
+
+        sb.append("\nNet search (stage S2)\n")
+        sb.append("  search maange: ").append(get("web_runs")).append(" · jawab bana: ").append(get("web_ok"))
+            .append(" · bina flag ke saaf: ").append(get("web_clean")).append(" · source nahi mila: ").append(get("web_no_source"))
+            .append(" · adhura (ek round fail): ").append(get("web_partial")).append(" · Stop: ").append(get("web_stopped")).append("\n")
+        sb.append("  Tavily credit kul: ").append(get("web_credits")).append(" · rounds: ").append(get("web_rounds"))
+            .append(" · cache se (0 credit): ").append(get("web_cache_hit")).append(" · doosra round (broad): ").append(get("web_broadened")).append("\n")
+        sb.append("  roka / line boli: key nahi ").append(get("web_no_key")).append(" · key galat ").append(get("web_bad_key"))
+            .append(" · offline ").append(get("web_offline")).append(" · plan khatam ").append(get("web_plan_exhausted"))
+            .append(" · aaj ki limit ").append(get("web_cap_reached")).append(" · private query ").append(get("web_blocked_query"))
+            .append(" · number hataya ").append(get("web_number_stripped")).append(" · is stage mein na banne wali kism ").append(get("web_skip_kind")).append("\n")
+        sb.append("  provider dikkat: timeout ").append(get("web_timeouts")).append(" · rate limit ").append(get("web_rate_limited"))
+            .append(" · baaki ").append(get("web_failed")).append("\n")
+        sb.append("  validator: verify nahi hui lines ").append(get("web_unverified")).append(" · model ke link hataye ").append(get("web_links_removed"))
+            .append(" · galat [n] ").append(get("web_invalid_marker")).append(" · jawab mein koi [n] nahi ").append(get("web_cited_none"))
+            .append(" · instruction jaisi lines hatayi ").append(get("web_injected_dropped")).append("\n")
+        sb.append("  context: kam sources aaye ").append(get("web_ctx_trim")).append(" · jawab nahi likha gaya (sirf sources) ").append(get("web_compose_failed"))
+            .append(" · Gemini se Gemma ").append(get("web_compose_fallback")).append(" · bhasha retry ").append(get("web_lang_retry"))
+            .append(" (theek ").append(get("web_lang_retry_ok")).append(" / phir bhi galat ").append(get("web_lang_retry_failed")).append(")\n")
+        val webOk = get("web_ok")
+        val webClean = get("web_clean")
+        sb.append("  S2 checklist (10 sawaal, jawab bane >= 10, saaf >= 90%): ")
+        if (webOk < 10) {
+            sb.append("[baaki] abhi ").append(webOk).append(" jawab bane\n")
+        } else {
+            val pctClean = Math.round(webClean * 100.0 / webOk).toInt()
+            sb.append(if (webClean * 100 >= 90 * webOk) "[naapa] " else "[baaki] ").append(webClean).append("/").append(webOk)
+                .append(" = ").append(pctClean).append("% bina flag ke\n")
+        }
 
         sb.append("\nTask engine (Phase 3)\n")
         sb.append("  plans: ").append(get("plan_runs")).append(" · 2+ kaam wale: ").append(get("plan_multi"))

@@ -154,6 +154,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     private var fillerCount = 0
     private var fillerAttempts = 0
     private var wakePending = false // opened by the wake word and nothing was said yet
+    private var bargeResumes = 0 // false barge-ins of the reply that is being spoken (see ConversationPolicy)
 
     // ElevenLabs engine (audit PDF Sec 9.7): own PCM player; the platform TTS below is its fallback
     private var eleven: ElevenPlayer? = null
@@ -197,8 +198,11 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     fun startFromWake(initial: String) {
         if (state != State.IDLE) return
         val text = initial.trim()
+        // mic mode "continuous": the conversation that the wake phrase opens goes on without saying the phrase again
+        val continuous = ConversationPolicy.wakeSessionIsContinuous(Store.micMode)
         if (text.isEmpty()) {
-            begin(Mode.TAP, followUp = true, windowMs = WAKE_WINDOW_MS, wake = true)
+            if (continuous) continuousOn = true
+            begin(if (continuous) Mode.CONTINUOUS else Mode.TAP, followUp = true, windowMs = WAKE_WINDOW_MS, wake = true)
             return
         }
         voiceTurn = true
@@ -209,7 +213,8 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         endOfTurnAt = SystemClock.elapsedRealtime()
         firstAudioPending = true
         firstAudioFast = false
-        mode = Mode.TAP
+        if (continuous) continuousOn = true
+        mode = if (continuous) Mode.CONTINUOUS else Mode.TAP
         setState(State.THINKING)
         scheduleFillers()
         cb.onFinalText(text, 0L)
@@ -273,6 +278,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         main.removeCallbacks(extendTimeout)
         main.removeCallbacks(followUpTimeout)
         main.removeCallbacks(reopenRunnable)
+        main.removeCallbacks(bargeTimeout)
         cancelFillers()
         try {
             recognizer?.cancel()
@@ -306,6 +312,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     fun replyReady(spoken: String?, expectsAnswer: Boolean = false, fast: Boolean = false) {
         if (state != State.THINKING) return
         cancelFillers()
+        bargeResumes = 0
         firstAudioFast = fast
         expectAnswer = expectsAnswer
         if (spoken.isNullOrBlank()) {
@@ -394,6 +401,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         main.removeCallbacks(extendTimeout)
         main.removeCallbacks(followUpTimeout)
         main.removeCallbacks(reopenRunnable)
+        main.removeCallbacks(bargeTimeout)
         mode = m
         holding = m == Mode.HOLD
         releasing = false
@@ -414,6 +422,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
             if (!wake) ConvKpi.inc("followup_open")
             main.postDelayed(followUpTimeout, window)
         }
+        if (barge) main.postDelayed(bargeTimeout, ConversationPolicy.BARGE_WINDOW_MS)
         cb.onPartial("")
         setState(State.LISTENING)
         startRecognizer()
@@ -503,6 +512,18 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         }
     }
 
+    /** The interruption was not followed by speech: it was echo or noise, so finish the reply (see [finishUtterance]). */
+    private val bargeTimeout = Runnable {
+        if (state == State.LISTENING && fromBarge && !speechSeen && collected.isEmpty()) {
+            try {
+                recognizer?.cancel()
+            } catch (_: Exception) {
+                // already stopped
+            }
+            finishUtterance()
+        }
+    }
+
     private val reopenRunnable = Runnable {
         if (state != State.IDLE) return@Runnable
         if (continuousOn) {
@@ -521,6 +542,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         speechSeen = true
         main.removeCallbacks(followUpTimeout)
         main.removeCallbacks(extendTimeout)
+        main.removeCallbacks(bargeTimeout)
         if (extendActive) {
             extendActive = false
             ConvKpi.inc("endpoint_saved")
@@ -638,6 +660,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         main.removeCallbacks(restartRunnable)
         main.removeCallbacks(extendTimeout)
         main.removeCallbacks(followUpTimeout)
+        main.removeCallbacks(bargeTimeout)
         extendActive = false
         val text = collected.toString().trim()
         val duration = SystemClock.elapsedRealtime() - startedAt
@@ -647,18 +670,26 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         cb.onPartial("")
 
         if (text.isEmpty()) {
-            if (fromBarge) ConvKpi.inc("barge_false") // we stopped the assistant for nothing
+            val wasBarge = fromBarge
+            if (wasBarge) ConvKpi.inc("barge_false") // we stopped the assistant for nothing
             fromBarge = false
+            if (wasBarge && continueAfterFalseBarge()) return
             silentRounds++
             if (followUpMode) {
                 countQuietClose()
                 quietEnd()
                 return
             }
-            if (mode == Mode.CONTINUOUS && continuousOn && silentRounds < 3) {
+            if (mode == Mode.CONTINUOUS && continuousOn &&
+                !ConversationPolicy.continuousIdleExpired(SystemClock.elapsedRealtime(), startedAt)
+            ) {
                 main.postDelayed(restartRunnable, 250L)
             } else {
-                if (mode != Mode.HOLD) cb.onMessage("Kuch sunai nahi diya.")
+                if (mode != Mode.HOLD) {
+                    cb.onMessage(
+                        if (mode == Mode.CONTINUOUS) "Kaafi der se kuch nahi suna, mic band kar diya." else "Kuch sunai nahi diya."
+                    )
+                }
                 continuousOn = false
                 voiceTurn = false
                 setState(State.IDLE)
@@ -733,10 +764,29 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         }
     }
 
+    /**
+     * The assistant was stopped by the barge-in detector but nobody spoke (its own voice, a cough, noise): say the rest of the
+     * reply instead of leaving it half spoken. True when the rest is being spoken now.
+     */
+    private fun continueAfterFalseBarge(): Boolean {
+        val rest = resumeText
+        if (!ConversationPolicy.mayResumeAfterFalseBarge(bargeResumes, hasResume() && rest != null) || rest == null) return false
+        val whole = lastSpoken
+        resumeText = null
+        bargeResumes++
+        ConvKpi.inc("barge_resumed")
+        followUpMode = false
+        voiceTurn = true
+        speakNow(rest, countTurn = false)
+        lastSpoken = whole // "phir se bolo" still repeats the whole reply, not only its rest
+        return true
+    }
+
     private fun quietEnd() {
         voiceTurn = false
         followUpMode = false
         reopenAsFollowUp = false
+        continuousOn = false // a window that closed with nobody speaking ends the conversation (wake phrase window included)
         setState(State.IDLE)
     }
 
@@ -744,6 +794,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
         main.removeCallbacks(releaseTimeout)
         main.removeCallbacks(restartRunnable)
         main.removeCallbacks(extendTimeout)
+        main.removeCallbacks(bargeTimeout)
         try {
             recognizer?.cancel()
         } catch (_: Exception) {
@@ -1074,6 +1125,7 @@ class VoiceController(context: Context, private val cb: Callbacks) {
     private fun startBargeWatch() {
         val level = Store.bargeIn
         if (level == "off" || !hasMic() || state != State.SPEAKING) return
+        if (!ConversationPolicy.bargeWatchAllowed(bargeResumes)) return // false alarms used up: stop listening for interruptions in this reply
         stopBargeWatch()
         val detector = BargeInDetector(app, level == "strict", object : BargeInDetector.Listener {
             override fun onCandidate() {
