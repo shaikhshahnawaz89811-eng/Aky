@@ -1,0 +1,395 @@
+{
+ "version": 1,
+ "note": "Net Search Agent S1: labelled Hinglish / English messages for the intent router (SearchIntent). expect = the request kinds a correct router returns, in order; null = the message must NOT go to the net (phone actions, code talk, own-work words, plain chat). prevWeb = the previous AI message was a web answer; forced = the composer's Web toggle is on. Used by SearchEvalAssetTest; grow it from real chats.",
+ "cases": [
+  {
+   "id": "s01",
+   "text": "gemma 4 ka latest version search karo",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "VALUE"
+   ]
+  },
+  {
+   "id": "s02",
+   "text": "search for best offline speech recognition models",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "GENERAL"
+   ]
+  },
+  {
+   "id": "s03",
+   "text": "tavily ka pricing net par dekho",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "VALUE"
+   ]
+  },
+  {
+   "id": "s04",
+   "text": "latest AI news",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "NEWS"
+   ]
+  },
+  {
+   "id": "s05",
+   "text": "ipl score today",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "NEWS"
+   ]
+  },
+  {
+   "id": "s06",
+   "text": "trending android apps this month",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "NEWS"
+   ]
+  },
+  {
+   "id": "s07",
+   "text": "tavily ki official website ka link do",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "OFFICIAL_LINK"
+   ]
+  },
+  {
+   "id": "s08",
+   "text": "llama.cpp download link",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "DOWNLOAD_PAGE"
+   ]
+  },
+  {
+   "id": "s09",
+   "text": "gemma 4 ka apk kahan se milega",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "DOWNLOAD_PAGE"
+   ]
+  },
+  {
+   "id": "s10",
+   "text": "give me the direct download link of sherpa-onnx apk",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "DIRECT_FILE"
+   ]
+  },
+  {
+   "id": "s11",
+   "text": "gemma ya qwen kaun sa behtar hai",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "COMPARE"
+   ]
+  },
+  {
+   "id": "s12",
+   "text": "tavily vs brave vs serper",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "COMPARE"
+   ]
+  },
+  {
+   "id": "s13",
+   "text": "gemma 4 vs qwen 2.5 and give download links",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "COMPARE",
+    "DOWNLOAD_PAGE"
+   ]
+  },
+  {
+   "id": "s14",
+   "text": "show me images of kotlin logo",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "IMAGE"
+   ]
+  },
+  {
+   "id": "s15",
+   "text": "best android tutorial videos suggest karo",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "VIDEO"
+   ]
+  },
+  {
+   "id": "s16",
+   "text": "research paper on on-device llm dikhao",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "PAPER"
+   ]
+  },
+  {
+   "id": "s17",
+   "text": "github pe litert-lm repo dhundo",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "GITHUB"
+   ]
+  },
+  {
+   "id": "s18",
+   "text": "site:huggingface.co gemma 4 e2b",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "SITE"
+   ]
+  },
+  {
+   "id": "s19",
+   "text": "saari pages explore karo docs.tavily.com",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "SITE_EXPLORE"
+   ]
+  },
+  {
+   "id": "s20",
+   "text": "kotlin coroutines ki poori jaankari de do",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s21",
+   "text": "is it true that kotlin 2.3 is released",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "FACT_CHECK"
+   ]
+  },
+  {
+   "id": "s22",
+   "text": "kotlin ka latest version kaunsa hai",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "VALUE"
+   ]
+  },
+  {
+   "id": "s23",
+   "text": "gemma 4 license kya hai",
+   "prevWeb": false,
+   "forced": false,
+   "expect": [
+    "VALUE"
+   ]
+  },
+  {
+   "id": "s24",
+   "text": "uska price kitna hai",
+   "prevWeb": true,
+   "forced": false,
+   "expect": [
+    "FOLLOW_UP"
+   ]
+  },
+  {
+   "id": "s25",
+   "text": "wo kab release hua",
+   "prevWeb": true,
+   "forced": false,
+   "expect": [
+    "FOLLOW_UP"
+   ]
+  },
+  {
+   "id": "s26",
+   "text": "thanks bhai",
+   "prevWeb": true,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s27",
+   "text": "search karo",
+   "prevWeb": true,
+   "forced": false,
+   "expect": [
+    "FOLLOW_UP"
+   ]
+  },
+  {
+   "id": "s28",
+   "text": "kal subah 6 baje alarm laga do",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s29",
+   "text": "mausam kaisa hai",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s30",
+   "text": "battery kitni hai",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s31",
+   "text": "kitne baje uthna hai",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s32",
+   "text": "hello",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s33",
+   "text": "mujhe python mein array sort karna hai",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s34",
+   "text": "search bar kaise banaye",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s35",
+   "text": "kotlin coroutines kya hote hain",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s36",
+   "text": "latest",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s37",
+   "text": "download karo",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s38",
+   "text": "image resize kaise kare",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s39",
+   "text": "ek photo generate karo billi ki",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s40",
+   "text": "github pe push kaise kare",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s41",
+   "text": "google docs mein file kaise banate hain",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s42",
+   "text": "array vs list compare karo",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s43",
+   "text": "is app mein ek naya feature add karo",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s44",
+   "text": "naya project banao",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s45",
+   "text": "tum kaun ho",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s46",
+   "text": "sketch studio ka phase 2 karo",
+   "prevWeb": false,
+   "forced": false,
+   "expect": null
+  },
+  {
+   "id": "s47",
+   "text": "kotlin coroutines",
+   "prevWeb": false,
+   "forced": true,
+   "expect": [
+    "GENERAL"
+   ]
+  },
+  {
+   "id": "s48",
+   "text": "hello",
+   "prevWeb": false,
+   "forced": true,
+   "expect": null
+  }
+ ]
+}

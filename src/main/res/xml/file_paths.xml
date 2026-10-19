@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sketch Studio stage 2: files shared as .svg / .png live only in cache/sketch_export (FileProvider, see AndroidManifest). -->
+<paths>
+    <cache-path name="sketch_export" path="sketch_export/" />
+</paths>

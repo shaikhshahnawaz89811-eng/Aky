@@ -1,0 +1,520 @@
+{
+ "version": 1,
+ "note": "Phase 3C: 30 labelled Hinglish cases for the multi-intent exit check (audit Appendix A #2, #19). expect = the tool calls a correct answer has; args are checked by meaning (numbers, true/false, text without case); after = 1-based numbers of the calls this one waits for. clarify = no tool call, one question.",
+ "cases": [
+  {
+   "id": "m01",
+   "group": "multi",
+   "text": "time batao aur battery kitni hai",
+   "expect": [
+    {
+     "tool": "time_now"
+    },
+    {
+     "tool": "battery_level"
+    }
+   ]
+  },
+  {
+   "id": "m02",
+   "group": "multi",
+   "text": "torch on karo aur time batao",
+   "expect": [
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     }
+    },
+    {
+     "tool": "time_now"
+    }
+   ]
+  },
+  {
+   "id": "m03",
+   "group": "multi",
+   "text": "aaj ki date batao aur battery batao",
+   "expect": [
+    {
+     "tool": "date_today"
+    },
+    {
+     "tool": "battery_level"
+    }
+   ]
+  },
+  {
+   "id": "m04",
+   "group": "multi",
+   "text": "kal subah 8 baje alarm laga do aur 10 minute ka timer bhi",
+   "expect": [
+    {
+     "tool": "alarm_set",
+     "args": {
+      "hour": "8",
+      "minute": "0",
+      "tomorrow": "true"
+     }
+    },
+    {
+     "tool": "timer_set",
+     "args": {
+      "seconds": "600"
+     }
+    }
+   ]
+  },
+  {
+   "id": "m05",
+   "group": "multi",
+   "text": "Time batao, kal subah 8 baje alarm laga do, battery kitni hai",
+   "expect": [
+    {
+     "tool": "time_now"
+    },
+    {
+     "tool": "alarm_set",
+     "args": {
+      "hour": "8",
+      "minute": "0",
+      "tomorrow": "true"
+     }
+    },
+    {
+     "tool": "battery_level"
+    }
+   ]
+  },
+  {
+   "id": "m06",
+   "group": "multi",
+   "text": "5 minute ka timer lagao aur torch on karo",
+   "expect": [
+    {
+     "tool": "timer_set",
+     "args": {
+      "seconds": "300"
+     }
+    },
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     }
+    }
+   ]
+  },
+  {
+   "id": "m07",
+   "group": "multi",
+   "text": "date batao, time batao aur battery bhi",
+   "expect": [
+    {
+     "tool": "date_today"
+    },
+    {
+     "tool": "time_now"
+    },
+    {
+     "tool": "battery_level"
+    }
+   ]
+  },
+  {
+   "id": "m08",
+   "group": "multi",
+   "text": "torch band karo aur battery batao",
+   "expect": [
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "false"
+     }
+    },
+    {
+     "tool": "battery_level"
+    }
+   ]
+  },
+  {
+   "id": "m09",
+   "group": "multi",
+   "text": "alarm 6:30 baje subah ka laga do aur time batao",
+   "expect": [
+    {
+     "tool": "alarm_set",
+     "args": {
+      "hour": "6",
+      "minute": "30"
+     }
+    },
+    {
+     "tool": "time_now"
+    }
+   ]
+  },
+  {
+   "id": "m10",
+   "group": "multi",
+   "text": "mausam batao Mumbai ka aur battery kitni hai",
+   "expect": [
+    {
+     "tool": "weather_now",
+     "args": {
+      "city": "Mumbai"
+     }
+    },
+    {
+     "tool": "battery_level"
+    }
+   ]
+  },
+  {
+   "id": "m11",
+   "group": "multi",
+   "text": "Delhi ka mausam aur aaj ki date batao",
+   "expect": [
+    {
+     "tool": "weather_now",
+     "args": {
+      "city": "Delhi"
+     }
+    },
+    {
+     "tool": "date_today"
+    }
+   ]
+  },
+  {
+   "id": "m12",
+   "group": "multi",
+   "text": "2 minute ka timer lagao, torch on karo aur time batao",
+   "expect": [
+    {
+     "tool": "timer_set",
+     "args": {
+      "seconds": "120"
+     }
+    },
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     }
+    },
+    {
+     "tool": "time_now"
+    }
+   ]
+  },
+  {
+   "id": "m13",
+   "group": "multi",
+   "text": "YouTube kholo aur battery batao",
+   "expect": [
+    {
+     "tool": "app_open",
+     "args": {
+      "name": "youtube"
+     }
+    },
+    {
+     "tool": "battery_level"
+    }
+   ]
+  },
+  {
+   "id": "m14",
+   "group": "multi",
+   "text": "9876543210 par call karo aur time batao",
+   "expect": [
+    {
+     "tool": "call_dial",
+     "args": {
+      "number": "9876543210"
+     }
+    },
+    {
+     "tool": "time_now"
+    }
+   ]
+  },
+  {
+   "id": "m15",
+   "group": "multi",
+   "text": "battery batao aur flashlight on karo",
+   "expect": [
+    {
+     "tool": "battery_level"
+    },
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     }
+    }
+   ]
+  },
+  {
+   "id": "m16",
+   "group": "multi",
+   "text": "time batao, date batao",
+   "expect": [
+    {
+     "tool": "time_now"
+    },
+    {
+     "tool": "date_today"
+    }
+   ]
+  },
+  {
+   "id": "m17",
+   "group": "multi",
+   "text": "kal subah 5 baje ka alarm laga do aur Chrome kholo",
+   "expect": [
+    {
+     "tool": "alarm_set",
+     "args": {
+      "hour": "5",
+      "minute": "0",
+      "tomorrow": "true"
+     }
+    },
+    {
+     "tool": "app_open",
+     "args": {
+      "name": "chrome"
+     }
+    }
+   ]
+  },
+  {
+   "id": "d01",
+   "group": "after",
+   "text": "pehle torch on karo, phir 5 minute ka timer",
+   "expect": [
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     }
+    },
+    {
+     "tool": "timer_set",
+     "args": {
+      "seconds": "300"
+     },
+     "after": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d02",
+   "group": "after",
+   "text": "pehle time batao phir subah 7 baje ka alarm laga do",
+   "expect": [
+    {
+     "tool": "time_now"
+    },
+    {
+     "tool": "alarm_set",
+     "args": {
+      "hour": "7",
+      "minute": "0"
+     },
+     "after": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d03",
+   "group": "after",
+   "text": "pehle WhatsApp kholo, phir torch on karo",
+   "expect": [
+    {
+     "tool": "app_open",
+     "args": {
+      "name": "whatsapp"
+     }
+    },
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     },
+     "after": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d04",
+   "group": "after",
+   "text": "pehle battery dekho phir 10 minute ka timer lagao",
+   "expect": [
+    {
+     "tool": "battery_level"
+    },
+    {
+     "tool": "timer_set",
+     "args": {
+      "seconds": "600"
+     },
+     "after": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d05",
+   "group": "after",
+   "text": "pehle torch on karo, uske baad time batao, uske baad 1 minute ka timer",
+   "expect": [
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     }
+    },
+    {
+     "tool": "time_now",
+     "after": [
+      1
+     ]
+    },
+    {
+     "tool": "timer_set",
+     "args": {
+      "seconds": "60"
+     },
+     "after": [
+      2
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d06",
+   "group": "after",
+   "text": "pehle Pune ka mausam batao, phir torch on karo",
+   "expect": [
+    {
+     "tool": "weather_now",
+     "args": {
+      "city": "Pune"
+     }
+    },
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     },
+     "after": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d07",
+   "group": "after",
+   "text": "pehle date batao, phir kal subah 6 baje ka alarm laga do",
+   "expect": [
+    {
+     "tool": "date_today"
+    },
+    {
+     "tool": "alarm_set",
+     "args": {
+      "hour": "6",
+      "minute": "0",
+      "tomorrow": "true"
+     },
+     "after": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d08",
+   "group": "after",
+   "text": "pehle Camera kholo phir torch off karo",
+   "expect": [
+    {
+     "tool": "app_open",
+     "args": {
+      "name": "camera"
+     }
+    },
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "false"
+     },
+     "after": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "d09",
+   "group": "after",
+   "text": "pehle torch on karo phir 30 second ka timer lagao",
+   "expect": [
+    {
+     "tool": "torch_set",
+     "args": {
+      "on": "true"
+     }
+    },
+    {
+     "tool": "timer_set",
+     "args": {
+      "seconds": "30"
+     },
+     "after": [
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "id": "c01",
+   "group": "clarify",
+   "text": "Kal Mumbai jaana hai. 8 baje nikalna, pehle petrol, 10 baje meeting.",
+   "clarify": true,
+   "expect": []
+  },
+  {
+   "id": "c02",
+   "group": "clarify",
+   "text": "kal subah uthna hai",
+   "clarify": true,
+   "expect": []
+  },
+  {
+   "id": "c03",
+   "group": "clarify",
+   "text": "ek timer laga do",
+   "clarify": true,
+   "expect": []
+  },
+  {
+   "id": "c04",
+   "group": "clarify",
+   "text": "mausam batao",
+   "clarify": true,
+   "expect": []
+  }
+ ]
+}
